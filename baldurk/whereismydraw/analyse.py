@@ -114,6 +114,23 @@ class Analysis:
 
                 raise AnalysisFinished
 
+            # if the drawcall has a parameter which means no work happens, alert the user
+            if (self.drawcall.flags & rd.DrawFlags.Instanced) and self.drawcall.numInstances == 0:
+                self.analysis_steps.append({
+                    'msg': 'The drawcall {} is instanced, but the number of instances specified is 0.'
+                    .format(self.drawcall.name)
+                })
+
+                raise AnalysisFinished
+
+            if self.drawcall.numIndices == 0:
+                self.analysis_steps.append({
+                    'msg': 'The drawcall {} specifies 0 {}.'
+                    .format(self.drawcall.name, 'indices' if self.drawcall.flags & rd.DrawFlags.Indexed else 'vertices')
+                })
+
+                raise AnalysisFinished
+
             self.check_draw()
         except AnalysisFinished:
             pass
