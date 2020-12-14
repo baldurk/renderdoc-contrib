@@ -26,6 +26,7 @@ import qrenderdoc as qrd
 import renderdoc as rd
 import struct
 import math
+import random
 from typing import Callable, Tuple
 
 
@@ -345,6 +346,65 @@ class Analysis:
                        'This may not be a problem if no color output is expected on those targets.',
                 'pipe_stage': qrd.PipelineStage.Blending,
             })
+
+        # No obvious failures, if we can run a pixel history let's see if the shader discarded
+        if self.api_properties.pixelHistory:
+            self.tex_display.overlay = rd.DebugOverlay.Drawcall
+            self.out.SetTextureDisplay(self.tex_display)
+            overlay = self.out.GetDebugOverlayTexID()
+
+            drawcall_overlay_data = self.r.GetTextureData(overlay, self.tex_display.subresource)
+
+            dim = self.out.GetDimensions()
+
+            # Scan for all pixels that are covered, since we'll have to try a few
+            covered_list = []
+            for y in range(dim[1]):
+                for x in range(dim[0]):
+                    pixel_data = struct.unpack_from('4H', drawcall_overlay_data, (y * dim[0] + x) * 8)
+                    if pixel_data[0] != 0:
+                        covered_list.append((x, y))
+
+            # Shuffle the covered pixels
+            random.shuffle(covered_list)
+
+            # how many times should we try? Let's go conservative
+            attempts = 5
+            discarded_pixels = []
+
+            attempts = min(attempts, len(covered_list))
+
+            for attempt in range(attempts):
+                covered = covered_list[attempt]
+
+                history = self.r.PixelHistory(self.targets[0].resourceId, covered[0], covered[1],
+                                              self.tex_display.subresource,
+                                              self.tex_display.typeCast)
+
+                # if we didn't get any hits from this event that's strange but not much we can do about it
+                if len(history) == 0 or history[-1].eventId != self.eid:
+                    continue
+                elif history[-1].Passed():
+                    self.analysis_steps.append({
+                        'msg': 'Running pixel history on {} it showed that a fragment passed.\n\n '
+                               'Double check if maybe the draw is outputting something but it\'s invisible '
+                               '(e.g. rendering black on black)'.format(covered),
+                    })
+                    break
+                else:
+                    this_draw = [h for h in history if h.eventId == self.eid]
+
+                    # We can't really infer anything strongly from this, it's just one pixel. This is just a random
+                    # guess to help guide the user
+                    if all([h.shaderDiscarded for h in this_draw]):
+                        discarded_pixels.append(covered)
+
+            if len(discarded_pixels) > 0:
+                self.analysis_steps.append({
+                    'msg': 'Pixel history on {} pixels showed that in {} of them all fragments were discarded.\n\n '
+                           'This may not mean every other pixel discarded, but it is worth checking in case your '
+                           'shader is always discarding.'.format(attempts, len(discarded_pixels)),
+                })
 
     def check_failed_scissor(self):
         v = self.pipe.GetViewport(0)
