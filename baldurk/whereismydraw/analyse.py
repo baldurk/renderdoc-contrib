@@ -437,8 +437,10 @@ class Analysis:
         depth_func = rd.CompareFunction.AlwaysTrue
         ndc_bounds = [0.0, 1.0]
         depth_bounds = []
+        depth_enabled = False
         depth_clamp = True
         if self.api == rd.GraphicsAPI.OpenGL:
+            depth_enabled = self.glpipe.depthState.depthEnable
             if self.glpipe.depthState.depthBounds:
                 depth_bounds = [self.glpipe.depthState.nearBound, self.glpipe.depthState.farBound]
             depth_func = self.glpipe.depthState.depthFunction
@@ -446,20 +448,34 @@ class Analysis:
             if self.glpipe.vertexProcessing.clipNegativeOneToOne:
                 ndc_bounds = [-1.0, 1.0]
         elif self.api == rd.GraphicsAPI.Vulkan:
+            depth_enabled = self.vkpipe.depthStencil.depthTestEnable
             if self.vkpipe.depthStencil.depthBoundsEnable:
                 depth_bounds = [self.vkpipe.depthStencil.minDepthBounds,
                                 self.vkpipe.depthStencil.maxDepthBounds]
             depth_func = self.vkpipe.depthStencil.depthFunction
             depth_clamp = self.vkpipe.rasterizer.depthClampEnable
         elif self.api == rd.GraphicsAPI.D3D11:
+            depth_enabled = self.d3d11pipe.outputMerger.depthStencilState.depthEnable
             depth_func = self.d3d11pipe.outputMerger.depthStencilState.depthFunction
             depth_clamp = not self.d3d11pipe.rasterizer.state.depthClip
         elif self.api == rd.GraphicsAPI.D3D12:
+            depth_enabled = self.d3d12pipe.outputMerger.depthStencilState.depthEnable
             if self.d3d12pipe.outputMerger.depthStencilState.depthBoundsEnable:
                 depth_bounds = [self.d3d12pipe.outputMerger.depthStencilState.minDepthBounds,
                                 self.d3d12pipe.outputMerger.depthStencilState.maxDepthBounds]
             depth_func = self.d3d12pipe.outputMerger.depthStencilState.depthFunction
             depth_clamp = not self.d3d12pipe.rasterizer.state.depthClip
+
+        if not depth_enabled:
+            self.analysis_steps.append({
+                'msg': 'Depth test stage is disabled! Normally this means the depth test should always '
+                       'pass.\n\n'
+                       'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                       'setup and report an issue so we can narrow this down in future.',
+                'pipe_stage': qrd.PipelineStage.DepthTest,
+            })
+
+            raise AnalysisFinished
 
         # Check for state setups that will always fail
         if depth_func == rd.CompareFunction.Never:
@@ -731,21 +747,26 @@ class Analysis:
         # Get the cull mode. If culling is enabled we know which stencil state is in use and can narrow our analysis,
         # if culling is disabled then unfortunately we can't automatically narrow down which side is used.
         cull_mode = rd.CullMode.NoCull
+        stencil_enabled = False
         front = back = rd.StencilFace()
         if self.api == rd.GraphicsAPI.OpenGL:
             cull_mode = self.glpipe.rasterizer.state.cullMode
+            stencil_enabled = self.glpipe.stencilState.stencilEnable
             front = self.glpipe.stencilState.frontFace
             back = self.glpipe.stencilState.backFace
         elif self.api == rd.GraphicsAPI.Vulkan:
             cull_mode = self.vkpipe.rasterizer.cullMode
+            stencil_enabled = self.vkpipe.depthStencil.stencilTestEnable
             front = self.vkpipe.depthStencil.frontFace
             back = self.vkpipe.depthStencil.backFace
         elif self.api == rd.GraphicsAPI.D3D11:
             cull_mode = self.d3d11pipe.rasterizer.state.cullMode
+            stencil_enabled = self.d3d11pipe.outputMerger.depthStencilState.stencilEnable
             front = self.d3d11pipe.outputMerger.depthStencilState.frontFace
             back = self.d3d11pipe.outputMerger.depthStencilState.backFace
         elif self.api == rd.GraphicsAPI.D3D12:
             cull_mode = self.d3d12pipe.rasterizer.state.cullMode
+            stencil_enabled = self.d3d12pipe.outputMerger.depthStencilState.stencilEnable
             front = self.d3d12pipe.outputMerger.depthStencilState.frontFace
             back = self.d3d12pipe.outputMerger.depthStencilState.backFace
 
@@ -755,6 +776,17 @@ class Analysis:
             front = back
         elif cull_mode == rd.CullMode.Back:
             back = front
+
+        if not stencil_enabled:
+            self.analysis_steps.append({
+                'msg': 'Depth test stage is disabled! Normally this means the depth test should always '
+                       'pass.\n\n'
+                       'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                       'setup and report an issue so we can narrow this down in future.',
+                'pipe_stage': qrd.PipelineStage.DepthTest,
+            })
+
+            raise AnalysisFinished
 
         # Each of these checks below will check for two cases: first that the states are the same between front and
         # back, meaning EITHER that both were the same in the application so we don't need to know whether front or
