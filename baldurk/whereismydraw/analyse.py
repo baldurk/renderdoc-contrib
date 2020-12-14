@@ -257,9 +257,7 @@ class Analysis:
             'tex_display': rd.TextureDisplay(self.tex_display),
         })
 
-        vert_ndc_z = list(filter(lambda _: math.isfinite(_), [vert[2] for vert in self.vert_ndc]))
-        vert_bounds = [min(vert_ndc_z), max(vert_ndc_z)]
-
+        # Gather API-specific state
         depth_func = rd.CompareFunction.AlwaysTrue
         ndc_bounds = [0.0, 1.0]
         depth_bounds = []
@@ -287,6 +285,7 @@ class Analysis:
             depth_func = self.d3d12pipe.outputMerger.depthStencilState.depthFunction
             depth_clamp = not self.d3d12pipe.rasterizer.state.depthClip
 
+        # Check for state setups that will always fail
         if depth_func == rd.CompareFunction.Never:
             self.analysis_steps.append({
                 'msg': 'Depth test is set to Never, meaning it always fails for this draw.',
@@ -295,8 +294,15 @@ class Analysis:
 
             raise AnalysisFinished
 
+        # Calculate the min/max NDC bounds of the vertices in z
+        vert_ndc_z = list(filter(lambda _: math.isfinite(_), [vert[2] for vert in self.vert_ndc]))
+        vert_bounds = [min(vert_ndc_z), max(vert_ndc_z)]
+
+        # if depth clipping is enabled (aka depth clamping is disabled)
         if not depth_clamp:
             state_name = 'Depth Clip' if rd.IsD3D(self.api) else 'Depth Clamp'
+
+            # If the largest vertex NDC z is lower than the NDC range, the whole draw is near-plane clipped
             if vert_bounds[1] <= ndc_bounds[0]:
                 self.analysis_steps.append({
                     'msg': 'All of the drawcall vertices are in front of the near plane, and the '
@@ -307,6 +313,7 @@ class Analysis:
 
                 raise AnalysisFinished
 
+            # Same for the smallest z being above the NDC range
             if vert_bounds[0] >= ndc_bounds[1]:
                 self.analysis_steps.append({
                     'msg': 'All of the drawcall vertices are behind the far plane, and the '
@@ -317,7 +324,9 @@ class Analysis:
 
                 raise AnalysisFinished
 
-        if depth_bounds and (vert_bounds[0] >= depth_bounds[1] or vert_bounds[1] <= depth_bounds[0]):
+        # If the vertex NDC z range does not intersect the depth bounds range, and depth bounds test is
+        # enabled, the draw fails the depth bounds test
+        if depth_bounds and (vert_bounds[0] > depth_bounds[1] or vert_bounds[1] < depth_bounds[0]):
             self.analysis_steps.append({
                 'msg': 'All of the drawcall vertices are outside the depth bounds range ({} to {}), '
                        'which is enabled'.format(depth_bounds[0], depth_bounds[1]),
@@ -327,8 +336,8 @@ class Analysis:
 
             raise AnalysisFinished
 
-        # If no depth buffer is bound, all APIs spec that depth test should always pass! We checked
-        # non-depth test related failures above, so not sure what this means.
+        # If no depth buffer is bound, all APIs spec that depth test should always pass! This seems
+        # quite strange.
         if self.depth.resourceId == rd.ResourceId.Null():
             self.analysis_steps.append({
                 'msg': 'No depth buffer is bound! Normally this means the depth-test should always '
@@ -346,46 +355,82 @@ class Analysis:
         # Filter for clears before this event
         usage = [u for u in usage if u.eventId < self.eid and u.usage == rd.ResourceUsage.Clear]
 
-        clear_eid = 0
+        # If there's a prior clear
         if len(usage) > 0:
             clear_eid = usage[-1].eventId
 
-        self.r.SetFrameEvent(clear_eid, True)
+            self.r.SetFrameEvent(clear_eid, True)
 
-        clear_color = self.r.PickPixel(self.depth.resourceId, 0, 0,
-                                       rd.Subresource(self.depth.firstMip, self.depth.firstSlice, 0),
-                                       self.depth.typeCast)
+            # On GL the scissor test affects clears, check that
+            if self.api == rd.GraphicsAPI.OpenGL:
+                tmp_glpipe = self.r.GetGLPipelineState()
+                s = tmp_glpipe.rasterizer.scissors[0]
+                if s.enabled:
+                    v = self.pipe.GetViewport(0)
 
-        self.r.SetFrameEvent(self.eid, True)
+                    s_right = s.x + s.width
+                    s_bottom = s.y + s.height
+                    v_right = v.x + v.width
+                    v_bottom = v.y + v.height
+
+                    # if the scissor is empty or outside the size of the target that's certainly not intentional.
+                    if (s.width == 0 or s.height == 0 or s.x >= self.target_descs[-1].width or
+                            s.y >= self.target_descs[-1].height):
+                        self.analysis_steps.append({
+                            'msg': 'The last depth clear of {} at {} had scissor enabled, but the scissor rect '
+                                   '{},{} to {},{} doesn\'t cover the depth target so it won\'t get cleared.'
+                                   .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
+                            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
+                        })
+
+                    # if the clear's scissor doesn't overlap the viewport at the time of the draw,
+                    # warn the user
+                    elif v.x < s.x or v.y < s.y or v.x + v_right or v_bottom > s_bottom:
+                        self.analysis_steps.append({
+                            'msg': 'The last depth clear of {} at {} had scissor enabled, but the scissor rect '
+                                   '{},{} to {},{} is smaller than the current viewport {},{} to {},{}. '
+                                   'This may mean not every pixel was properly cleared.'
+                                   .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom, v.x, v.y,
+                                           v_right, v_bottom),
+                            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
+                        })
+
+            # If this was a clear then we expect the depth value to be uniform, so pick the pixel to
+            # get the depth clear value.
+            clear_color = self.r.PickPixel(self.depth.resourceId, 0, 0,
+                                           rd.Subresource(self.depth.firstMip, self.depth.firstSlice, 0),
+                                           self.depth.typeCast)
+
+            self.r.SetFrameEvent(self.eid, True)
+
+            if clear_eid > 0 and (
+                    clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.Greater) or (
+                    clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
+                self.analysis_steps.append({
+                    'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                           'function is {} which is impossible to pass.'.format(str(self.depth.resourceId), clear_eid,
+                                                                                clear_color.floatValue[0], depth_func),
+                    'pipe_stage': qrd.PipelineStage.DepthTest,
+                })
+
+                raise AnalysisFinished
+
+            # This isn't necessarily an error but is unusual - flag it
+            if clear_eid > 0 and (
+                    clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.GreaterEqual) or (
+                    clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.LessEqual):
+                self.analysis_steps.append({
+                    'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                           'function is {} which is highly unlikely to pass. This is worth checking'
+                    .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], depth_func),
+                    'pipe_stage': qrd.PipelineStage.DepthTest,
+                })
 
         # If there's no depth clear found at all, that's a red flag
-        if clear_eid == 0:
+        else:
             self.analysis_steps.append({
                 'msg': 'The depth target was not cleared prior to this draw, so it may contain unexpected '
                        'contents.',
-            })
-
-        if clear_eid > 0 and (
-                clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.Greater) or (
-                clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
-            self.analysis_steps.append({
-                'msg': 'The last depth clear of {} cleared depth to {:.4}, but the depth comparison function '
-                       'is {} which is impossible to pass.'.format(str(self.depth.resourceId),
-                                                                   clear_color.floatValue[0], depth_func),
-                'pipe_stage': qrd.PipelineStage.DepthTest,
-            })
-
-            raise AnalysisFinished
-
-        # This isn't necessarily an error but is unusual - flag it
-        if clear_eid > 0 and (
-                clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.GreaterEqual) or (
-                clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.LessEqual):
-            self.analysis_steps.append({
-                'msg': 'The last depth clear of {} cleared depth to {:.4}, but the depth comparison function '
-                       'is {} which is highly unlikely to pass. This is worth checking'
-                .format(str(self.depth.resourceId), clear_color.floatValue[0], depth_func),
-                'pipe_stage': qrd.PipelineStage.DepthTest,
             })
 
         # Equal depth testing is often used but not equal is rare - flag it too
