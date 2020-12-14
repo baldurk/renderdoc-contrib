@@ -871,9 +871,9 @@ class Analysis:
                     break
 
             if covered:
-                history = self.r.PixelHistory(self.targets[0].resourceId, covered[0], covered[1],
-                                              self.tex_display.subresource,
-                                              self.tex_display.typeCast)
+                sub = rd.Subresource(self.targets[-1].firstMip, self.targets[-1].firstSlice)
+                history = self.r.PixelHistory(self.targets[-1].resourceId, covered[0], covered[1], sub,
+                                              self.targets[-1].typeCast)
 
                 if len(history) == 0 or history[-1].eventId != self.eid or history[-1].Passed():
                     self.analysis_steps.append({
@@ -903,13 +903,20 @@ class Analysis:
                                 last_draw_eid = h.eventId
                                 break
 
+                    history_package = {'x': covered[0], 'y': covered[1], 'id': self.targets[-1].resourceId,
+                                       'tex_display': rd.TextureDisplay(self.tex_display)}
+                    history_package['tex_display'].resourceId = self.targets[-1].resourceId
+                    history_package['tex_display'].subresource = sub
+                    history_package['tex_display'].typeCast = self.targets[-1].typeCast
+                    history_package['history'] = history
+
                     if last_draw_eid > 0:
                         self.analysis_steps.append({
                             'msg': 'Pixel history on {} showed that {} fragments were outputted but their {} '
                                    'values all failed against the {} before the draw of {:.4}.\n\n '
                                    'The draw which outputted that depth value is at event {}.'
                             .format(covered, len(this_draw), val_name, val_name, pre_draw_val, last_draw_eid),
-                            'pixel_history': history,
+                            'pixel_history': history_package,
                         })
                     else:
                         self.analysis_steps.append({
@@ -917,7 +924,7 @@ class Analysis:
                                    'values all failed against the {} before the draw of {:.4}.\n\n '
                                    'No previous draw was detected that wrote that {} value.'
                             .format(covered, len(this_draw), val_name, val_name, pre_draw_val, val_name),
-                            'pixel_history': history,
+                            'pixel_history': history_package,
                         })
             else:
                 self.analysis_steps.append({
