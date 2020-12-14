@@ -105,8 +105,8 @@ class Analysis:
         try:
             self.analysis_steps = []
 
-            # If there are no targets at all, stop as there's no rendering we can analyse
-            if self.targets[0].resourceId == rd.ResourceId.Null():
+            # If there are no bound targets at all, stop as there's no rendering we can analyse
+            if len(self.targets) == 0:
                 self.analysis_steps.append({
                     'msg': 'No output render targets or depth target are bound at {}.'.format(self.eid)
                 })
@@ -294,6 +294,57 @@ class Analysis:
                     })
 
                     raise AnalysisFinished
+
+        blends = self.pipe.GetColorBlends()
+        targets = self.pipe.GetOutputTargets()
+
+        # Consider a write mask enabled if the corresponding target is unbound, to avoid false positives
+        enabled_color_masks = [
+            blends[i].writeMask != 0 or i >= len(targets) or targets[i].resourceId == rd.ResourceId.Null() for i in
+            range(len(blends))]
+
+        depth_writes = False
+        if self.api == rd.GraphicsAPI.OpenGL:
+            if self.glpipe.depthState.depthEnable:
+                depth_writes = self.glpipe.depthState.depthWrites
+        elif self.api == rd.GraphicsAPI.Vulkan:
+            if self.vkpipe.depthStencil.depthTestEnable:
+                depth_writes = self.vkpipe.depthStencil.depthWriteEnable
+        elif self.api == rd.GraphicsAPI.D3D11:
+            if self.d3d11pipe.outputMerger.depthStencilState.depthEnable:
+                depth_writes = self.d3d11pipe.outputMerger.depthStencilState.depthWrites
+        elif self.api == rd.GraphicsAPI.D3D12:
+            if self.d3d12pipe.outputMerger.depthStencilState.depthEnable:
+                depth_writes = self.d3d12pipe.outputMerger.depthStencilState.depthWrites
+
+        # if all color masks are disabled, at least warn - or consider the case solved if depth writes are also disabled
+        if not any(enabled_color_masks):
+            if depth_writes:
+                self.analysis_steps.append({
+                    'msg': 'All bound output targets have a write mask set to 0 - which means no color will be '
+                           'written.\n\n '
+                           'This may not be the problem if no color output is expected, as depth writes are enabled.',
+                    'pipe_stage': qrd.PipelineStage.Blending,
+                })
+            else:
+                self.analysis_steps.append({
+                    'msg': 'All bound output targets have a write mask set to 0 - which means no color will be '
+                           'written.\n\n '
+                           'Depth writes are also disabled so this draw will not output anything.',
+                    'pipe_stage': qrd.PipelineStage.Blending,
+                })
+
+                raise AnalysisFinished
+
+        # if only some color masks are disabled, alert the user since they may be wondering why nothing is being output
+        # to that target
+        if not all(enabled_color_masks):
+            self.analysis_steps.append({
+                'msg': 'Some output targets have a write mask set to 0 - which means no color will be '
+                       'written to those targets.\n\n '
+                       'This may not be a problem if no color output is expected on those targets.',
+                'pipe_stage': qrd.PipelineStage.Blending,
+            })
 
     def check_failed_scissor(self):
         v = self.pipe.GetViewport(0)
