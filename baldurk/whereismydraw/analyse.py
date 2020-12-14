@@ -300,21 +300,31 @@ class Analysis:
         targets = self.pipe.GetOutputTargets()
 
         # Consider a write mask enabled if the corresponding target is unbound, to avoid false positives
-        enabled_color_masks = [
-            blends[i].writeMask != 0 or i >= len(targets) or targets[i].resourceId == rd.ResourceId.Null() for i in
-            range(len(blends))]
+        enabled_color_masks = []
+        color_blends = []
+        for i, b in enumerate(blends):
+            if i >= len(targets) or targets[i].resourceId == rd.ResourceId.Null():
+                color_blends.append(None)
+            else:
+                enabled_color_masks.append(b.writeMask != 0)
+                color_blends.append(b)
 
+        blend_factor = (0.0, 0.0, 0.0, 0.0)
         depth_writes = False
         if self.api == rd.GraphicsAPI.OpenGL:
+            blend_factor = self.glpipe.framebuffer.blendState.blendFactor
             if self.glpipe.depthState.depthEnable:
                 depth_writes = self.glpipe.depthState.depthWrites
         elif self.api == rd.GraphicsAPI.Vulkan:
+            blend_factor = self.vkpipe.colorBlend.blendFactor
             if self.vkpipe.depthStencil.depthTestEnable:
                 depth_writes = self.vkpipe.depthStencil.depthWriteEnable
         elif self.api == rd.GraphicsAPI.D3D11:
+            blend_factor = self.d3d11pipe.outputMerger.blendState.blendFactor
             if self.d3d11pipe.outputMerger.depthStencilState.depthEnable:
                 depth_writes = self.d3d11pipe.outputMerger.depthStencilState.depthWrites
         elif self.api == rd.GraphicsAPI.D3D12:
+            blend_factor = self.d3d12pipe.outputMerger.blendState.blendFactor
             if self.d3d12pipe.outputMerger.depthStencilState.depthEnable:
                 depth_writes = self.d3d12pipe.outputMerger.depthStencilState.depthWrites
 
@@ -339,11 +349,55 @@ class Analysis:
 
         # if only some color masks are disabled, alert the user since they may be wondering why nothing is being output
         # to that target
-        if not all(enabled_color_masks):
+        elif not all(enabled_color_masks):
             self.analysis_steps.append({
                 'msg': 'Some output targets have a write mask set to 0 - which means no color will be '
                        'written to those targets.\n\n '
                        'This may not be a problem if no color output is expected on those targets.',
+                'pipe_stage': qrd.PipelineStage.Blending,
+            })
+
+        def is_zero(mul: rd.BlendMultiplier):
+            if mul == rd.BlendMultiplier.Zero:
+                return True
+            if rd.BlendMultiplier.FactorAlpha and blend_factor[3] == 0.0:
+                return True
+            if rd.BlendMultiplier.FactorRGB and blend_factor[0:3] == (0.0, 0.0, 0.0):
+                return True
+            if rd.BlendMultiplier.InvFactorAlpha and blend_factor[3] == 1.0:
+                return True
+            if rd.BlendMultiplier.InvFactorRGB and blend_factor[0:3] == (1.0, 1.0, 1.0):
+                return True
+            return False
+
+        def uses_src(mul: rd.BlendMultiplier):
+            return mul in [rd.BlendMultiplier.SrcCol, rd.BlendMultiplier.InvSrcCol, rd.BlendMultiplier.SrcAlpha,
+                           rd.BlendMultiplier.InvSrcAlpha,
+                           rd.BlendMultiplier.SrcAlphaSat, rd.BlendMultiplier.Src1Col, rd.BlendMultiplier.InvSrc1Col,
+                           rd.BlendMultiplier.Src1Alpha, rd.BlendMultiplier.InvSrc1Alpha]
+
+        # Look for any enabled color blend equations that would work out to 0, or not use the source data
+        blend_warnings = ''
+        for i, b in enumerate(color_blends):
+            if b is not None:
+                if b.enabled:
+                    # All operations use both operands in some sense so we can't count out any blend equation with just
+                    # that
+                    if is_zero(b.colorBlend.source) and not uses_src(b.colorBlend.destination):
+                        blend_warnings += 'Blending on output {} effectively multiplies the source color by zero, ' \
+                                          'and the destination color is multiplied by {}, so the source color is ' \
+                                          'completely unused.'.format(i, b.colorBlend.destination)
+
+                    # we don't warn on alpha state since it's sometimes only used for the color
+                elif b.logicOperationEnabled:
+                    if b.logicOperation == rd.LogicOperation.NoOp:
+                        blend_warnings += 'Blending on output {} is set to use logic operations, and the operation ' \
+                                          'is no-op.\n'.format(i)
+
+        if blend_warnings != '':
+            self.analysis_steps.append({
+                'msg': 'Some color blending state is strange, but not necessarily unintentional. This is worth '
+                       'checking if you haven\'t set this up deliberately:\n\n{}'.format(blend_warnings),
                 'pipe_stage': qrd.PipelineStage.Blending,
             })
 
