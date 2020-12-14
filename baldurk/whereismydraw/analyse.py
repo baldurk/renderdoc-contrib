@@ -26,7 +26,7 @@ import qrenderdoc as qrd
 import renderdoc as rd
 import struct
 import math
-from typing import Callable
+from typing import Callable, Tuple
 
 
 class AnalysisFinished(Exception):
@@ -144,6 +144,22 @@ class Analysis:
             self.tex_display.rangeMin = min([texmin.floatValue[x] for x in range(4)])
             self.tex_display.rangeMax = max([texmax.floatValue[x] for x in range(4)])
 
+        if self.api == rd.GraphicsAPI.Vulkan:
+            ra = self.vkpipe.currentPass.renderArea
+
+            # if the render area is empty that's certainly not intentional.
+            if ra.width == 0 or ra.height == 0:
+                self.analysis_steps.append({
+                    'msg': 'The render area is {}x{} so nothing will be rendered.'
+                    .format(ra.width, ra.height),
+                    'pipe_stage': qrd.PipelineStage.ViewportsScissors,
+                })
+
+                raise AnalysisFinished
+
+            # Other invalid render areas outside of attachment dimensions would be invalid behaviour that renderdoc
+            # doesn't account for
+
         texmin, texmax = self.get_overlay_minmax(self.tex_display, rd.DebugOverlay.Drawcall)
 
         if texmax.floatValue[0] < 0.5:
@@ -166,6 +182,13 @@ class Analysis:
         overlay = self.out.GetDebugOverlayTexID()
         return self.r.GetMinMax(overlay, rd.Subresource(), rd.CompType.Typeless)
 
+    def get_overlay_histogram(self, tex_display, overlay: rd.DebugOverlay, minmax: Tuple[float, float],
+                              channels: Tuple[bool, bool, bool, bool]):
+        tex_display.overlay = overlay
+        self.out.SetTextureDisplay(tex_display)
+        overlay = self.out.GetDebugOverlayTexID()
+        return self.r.GetHistogram(overlay, rd.Subresource(), rd.CompType.Typeless, minmax[0], minmax[1], channels)
+
     def check_onscreen(self):
         self.analysis_steps.append({
             'msg': 'The highlight drawcall overlay shows the draw, meaning it is rendering but failing some '
@@ -175,6 +198,27 @@ class Analysis:
         })
 
         # It's on-screen we debug the rasterization/testing/blending states
+
+        if self.pipe.GetScissor(0).enabled:
+            # Check if we're outside scissor first. This overlay is a bit messy because it's not pure red/green,
+            # so instead of getting the min and max and seeing if there are green pixels, we get the histogram
+            # because any green will show up in the green channel as distinct from white and black.
+            texhist = self.get_overlay_histogram(self.tex_display, rd.DebugOverlay.ViewportScissor, (0.0, 1.0),
+                                                 (False, True, False, False))
+
+            buckets = list(map(lambda _: _[0], filter(lambda _: _[1] > 0, list(enumerate(texhist)))))
+
+            # drop the top buckets, for white, as well as any buckets lower than 20% for the small amounts of green
+            # in other colors
+            buckets = [b for b in buckets if len(texhist) // 5 < b < len(texhist) - 1]
+
+            # If there are no green pixels at all, this completely failed
+            if len(buckets) == 0:
+                self.check_failed_scissor()
+
+                # Regardless of whether we finihsed the analysis above, don't do any more checking.
+                raise AnalysisFinished
+
         texmin, texmax = self.get_overlay_minmax(self.tex_display, rd.DebugOverlay.BackfaceCull)
 
         # If there are no green pixels at all, this completely failed
@@ -201,6 +245,47 @@ class Analysis:
 
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
+
+    def check_failed_scissor(self):
+        v = self.pipe.GetViewport(0)
+        s = self.pipe.GetScissor(0)
+
+        s_right = s.x + s.width
+        s_bottom = s.y + s.height
+        v_right = v.x + v.width
+        v_bottom = v.y + v.height
+
+        # if the scissor is empty that's certainly not intentional.
+        if s.width == 0 or s.height == 0:
+            self.analysis_steps.append({
+                'msg': 'The scissor region {},{} to {},{} is empty so nothing will be rendered.'
+                .format(s.x, s.y, s_right, s_bottom),
+                'pipe_stage': qrd.PipelineStage.ViewportsScissors,
+            })
+
+            raise AnalysisFinished
+
+        # If the scissor region doesn't intersect the viewport, that's a problem
+        if s_right < v.x or s.x > v_right or s.x > v_right or s.y > v_bottom:
+            self.analysis_steps.append({
+                'msg': 'The scissor region {},{} to {},{} is completely outside the viewport of {},{} to {},{} so all '
+                       'pixels will be scissor clipped'
+                .format(s.x, s.y, s_right, s_bottom, v.x, v.y, v_right, v_bottom),
+                # copy the TextureDisplay object so we can modify it without changing the one in this step
+                'pipe_stage': qrd.PipelineStage.Rasterizer,
+            })
+
+            raise AnalysisFinished
+
+        self.analysis_steps.append({
+            'msg': 'The draw is outside of the scissor region, so it has been clipped.\n\n'
+                   'If this isn\'t intentional, check your scissor state.',
+            # copy the TextureDisplay object so we can modify it without changing the one in this step
+            'tex_display': rd.TextureDisplay(self.tex_display),
+            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
+        })
+
+        raise AnalysisFinished
 
     def check_offscreen(self):
         self.analysis_steps.append({
@@ -379,8 +464,15 @@ class Analysis:
                     v_bottom = v.y + v.height
 
                     # if the scissor is empty or outside the size of the target that's certainly not intentional.
-                    if (s.width == 0 or s.height == 0 or s.x >= self.target_descs[-1].width or
-                            s.y >= self.target_descs[-1].height):
+                    if s.width == 0 or s.height == 0:
+                        self.analysis_steps.append({
+                            'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
+                                   '{},{} to {},{} is empty so nothing will get cleared.'
+                            .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
+                            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
+                        })
+
+                    if s.x >= self.target_descs[-1].width or s.y >= self.target_descs[-1].height:
                         self.analysis_steps.append({
                             'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
                                    '{},{} to {},{} doesn\'t cover the depth-stencil target so it won\'t get cleared.'
