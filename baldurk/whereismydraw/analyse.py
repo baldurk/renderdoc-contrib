@@ -246,6 +246,55 @@ class Analysis:
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
 
+        sample_count = self.target_descs[0].msSamp
+
+        # OK we've exhausted the help we can get overlays!
+
+        # Check that the sample mask isn't 0, which will cull the draw
+        sample_mask = 0xFFFFFFFF
+        if self.api == rd.GraphicsAPI.OpenGL:
+            # GL only applies the sample mask in MSAA scenarios
+            if (sample_count > 1 and self.glpipe.rasterizer.state.multisampleEnable and
+                    self.glpipe.rasterizer.state.sampleMask):
+                sample_mask = self.glpipe.rasterizer.state.sampleMaskValue
+        elif self.api == rd.GraphicsAPI.Vulkan:
+            sample_mask = self.vkpipe.multisample.sampleMask
+        elif self.api == rd.GraphicsAPI.D3D11:
+            # D3D always applies the sample mask
+            sample_mask = self.d3d11pipe.outputMerger.blendState.sampleMask
+        elif self.api == rd.GraphicsAPI.D3D12:
+            sample_mask = self.d3d12pipe.rasterizer.sampleMask
+
+        if sample_mask == 0:
+            self.analysis_steps.append({
+                'msg': 'The sample mask is set to 0, which will discard all samples.',
+                # copy the TextureDisplay object so we can modify it without changing the one in this step
+                'pipe_stage': qrd.PipelineStage.Rasterizer,
+            })
+
+        # On GL, check the sample coverage value for MSAA targets
+        if self.api == rd.GraphicsAPI.OpenGL:
+            rs_state = self.glpipe.rasterizer.state
+            if sample_count > 1 and rs_state.multisampleEnable and rs_state.sampleCoverage:
+                if rs_state.sampleCoverageInvert and rs_state.sampleCoverageValue >= 1.0:
+                    self.analysis_steps.append({
+                        'msg': 'Sample coverage is enabled, set to invert, and the value is {}. This results in a '
+                               'coverage mask of 0.'.format(rs_state.sampleCoverageValue),
+                        # copy the TextureDisplay object so we can modify it without changing the one in this step
+                        'pipe_stage': qrd.PipelineStage.Rasterizer,
+                    })
+
+                    raise AnalysisFinished
+                elif not rs_state.sampleCoverageInvert and rs_state.sampleCoverageValue <= 0.0:
+                    self.analysis_steps.append({
+                        'msg': 'Sample coverage is enabled, and the value is {}. This results in a '
+                               'coverage mask of 0.'.format(rs_state.sampleCoverageValue),
+                        # copy the TextureDisplay object so we can modify it without changing the one in this step
+                        'pipe_stage': qrd.PipelineStage.Rasterizer,
+                    })
+
+                    raise AnalysisFinished
+
     def check_failed_scissor(self):
         v = self.pipe.GetViewport(0)
         s = self.pipe.GetScissor(0)
