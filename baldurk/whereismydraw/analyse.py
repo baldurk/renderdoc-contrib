@@ -26,6 +26,7 @@ import qrenderdoc as qrd
 import renderdoc as rd
 import struct
 import math
+from typing import Callable
 
 
 class AnalysisFinished(Exception):
@@ -240,16 +241,6 @@ class Analysis:
 
         raise AnalysisFinished
 
-    def check_failed_stencil(self):
-        self.analysis_steps.append({
-            'msg': 'The stencil test overlay shows red, so the draw is completely failing a stencil test.',
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-        })
-
-        # TODO: Check the stencil test state, last depth clear value, see if this draw is just occluded
-        #  or if there's an obvious mistake in the state
-
     def check_failed_depth(self):
         self.analysis_steps.append({
             'msg': 'The depth test overlay shows red, so the draw is completely failing a depth test.',
@@ -336,15 +327,29 @@ class Analysis:
 
             raise AnalysisFinished
 
-        # If no depth buffer is bound, all APIs spec that depth test should always pass! This seems
+        # Equal depth testing is often used but not equal is rare - flag it too
+        if depth_func == rd.CompareFunction.NotEqual:
+            self.analysis_steps.append({
+                'msg': 'The depth function of {} is not a problem but is unusual.'.format(depth_func),
+                'pipe_stage': qrd.PipelineStage.DepthTest,
+            })
+
+        self.check_previous_depth_stencil(depth_func)
+
+    def check_previous_depth_stencil(self, depth_func):
+        val_name = 'depth' if depth_func is not None else 'stencil'
+        test_name = '{} test'.format(val_name)
+        result_stage = qrd.PipelineStage.DepthTest if depth_func is not None else qrd.PipelineStage.StencilTest
+
+        # If no depth buffer is bound, all APIs spec that depth/stencil test should always pass! This seems
         # quite strange.
         if self.depth.resourceId == rd.ResourceId.Null():
             self.analysis_steps.append({
-                'msg': 'No depth buffer is bound! Normally this means the depth-test should always '
+                'msg': 'No depth buffer is bound! Normally this means the {} should always '
                        'pass.\n\n'
-                       'Sorry I couldn\'t figure out the exact problem. Please check your depth test '
-                       'setup and report an issue so we can narrow this down in future.',
-                'pipe_stage': qrd.PipelineStage.DepthTest,
+                       'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                       'setup and report an issue so we can narrow this down in future.'.format(test_name, test_name),
+                'pipe_stage': result_stage,
             })
 
             raise AnalysisFinished
@@ -377,9 +382,9 @@ class Analysis:
                     if (s.width == 0 or s.height == 0 or s.x >= self.target_descs[-1].width or
                             s.y >= self.target_descs[-1].height):
                         self.analysis_steps.append({
-                            'msg': 'The last depth clear of {} at {} had scissor enabled, but the scissor rect '
-                                   '{},{} to {},{} doesn\'t cover the depth target so it won\'t get cleared.'
-                                   .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
+                            'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
+                                   '{},{} to {},{} doesn\'t cover the depth-stencil target so it won\'t get cleared.'
+                            .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
                             'pipe_stage': qrd.PipelineStage.ViewportsScissors,
                         })
 
@@ -387,11 +392,11 @@ class Analysis:
                     # warn the user
                     elif v.x < s.x or v.y < s.y or v.x + v_right or v_bottom > s_bottom:
                         self.analysis_steps.append({
-                            'msg': 'The last depth clear of {} at {} had scissor enabled, but the scissor rect '
+                            'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
                                    '{},{} to {},{} is smaller than the current viewport {},{} to {},{}. '
                                    'This may mean not every pixel was properly cleared.'
-                                   .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom, v.x, v.y,
-                                           v_right, v_bottom),
+                            .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom, v.x, v.y,
+                                    v_right, v_bottom),
                             'pipe_stage': qrd.PipelineStage.ViewportsScissors,
                         })
 
@@ -403,41 +408,37 @@ class Analysis:
 
             self.r.SetFrameEvent(self.eid, True)
 
-            if clear_eid > 0 and (
-                    clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.Greater) or (
-                    clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
-                self.analysis_steps.append({
-                    'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
-                           'function is {} which is impossible to pass.'.format(str(self.depth.resourceId), clear_eid,
-                                                                                clear_color.floatValue[0], depth_func),
-                    'pipe_stage': qrd.PipelineStage.DepthTest,
-                })
+            if depth_func is not None:
+                if clear_eid > 0 and (
+                        clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.Greater) or (
+                        clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
+                    self.analysis_steps.append({
+                        'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                               'function is {} which is impossible to pass.'.format(str(self.depth.resourceId),
+                                                                                    clear_eid,
+                                                                                    clear_color.floatValue[0],
+                                                                                    depth_func),
+                        'pipe_stage': qrd.PipelineStage.DepthTest,
+                    })
 
-                raise AnalysisFinished
+                    raise AnalysisFinished
 
-            # This isn't necessarily an error but is unusual - flag it
-            if clear_eid > 0 and (
-                    clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.GreaterEqual) or (
-                    clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.LessEqual):
-                self.analysis_steps.append({
-                    'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
-                           'function is {} which is highly unlikely to pass. This is worth checking'
-                    .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], depth_func),
-                    'pipe_stage': qrd.PipelineStage.DepthTest,
-                })
+                # This isn't necessarily an error but is unusual - flag it
+                if clear_eid > 0 and (
+                        clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.GreaterEqual) or (
+                        clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.LessEqual):
+                    self.analysis_steps.append({
+                        'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                               'function is {} which is highly unlikely to pass. This is worth checking'
+                        .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], depth_func),
+                        'pipe_stage': qrd.PipelineStage.DepthTest,
+                    })
 
-        # If there's no depth clear found at all, that's a red flag
+        # If there's no depth/stencil clear found at all, that's a red flag
         else:
             self.analysis_steps.append({
-                'msg': 'The depth target was not cleared prior to this draw, so it may contain unexpected '
+                'msg': 'The depth-stencil target was not cleared prior to this draw, so it may contain unexpected '
                        'contents.',
-            })
-
-        # Equal depth testing is often used but not equal is rare - flag it too
-        if depth_func == rd.CompareFunction.NotEqual:
-            self.analysis_steps.append({
-                'msg': 'The depth function of {} is not a problem but is unusual.'.format(depth_func),
-                'pipe_stage': qrd.PipelineStage.DepthTest,
             })
 
         # Nothing seems obviously broken, this draw might just be occluded. See if we can get some pixel
@@ -475,33 +476,40 @@ class Analysis:
                     })
                 else:
                     this_draw = [h for h in history if h.eventId == self.eid]
-                    pre_draw_depth = this_draw[0].preMod.depth
+                    pre_draw_val = this_draw[0].preMod.depth if depth_func is not None else this_draw[0].preMod.stencil
                     last_draw_eid = 0
                     for h in reversed(history):
                         # Skip this draw itself
                         if h.eventId == self.eid:
                             continue
+
                         # Skip any failed events
                         if not h.Passed():
                             continue
-                        if h.preMod.depth != pre_draw_depth and h.postMod.depth == pre_draw_depth:
-                            last_draw_eid = h.eventId
-                            break
+
+                        if depth_func is not None:
+                            if h.preMod.depth != pre_draw_val and h.postMod.depth == pre_draw_val:
+                                last_draw_eid = h.eventId
+                                break
+                        else:
+                            if h.preMod.stencil != pre_draw_val and h.postMod.stencil == pre_draw_val:
+                                last_draw_eid = h.eventId
+                                break
 
                     if last_draw_eid > 0:
                         self.analysis_steps.append({
-                            'msg': 'Pixel history on {} showed that {} fragments outputted but their depth '
+                            'msg': 'Pixel history on {} showed that {} fragments were outputted but their {} '
                                    'values all failed against the {} before the draw of {:.4}.\n\n '
                                    'The draw which outputted that depth value is at event {}.'
-                            .format(covered, len(this_draw), pre_draw_depth, last_draw_eid),
+                            .format(covered, len(this_draw), val_name, val_name, pre_draw_val, last_draw_eid),
                             'pixel_history': history,
                         })
                     else:
                         self.analysis_steps.append({
-                            'msg': 'Pixel history on {} showed that {} fragments outputted but their depth '
+                            'msg': 'Pixel history on {} showed that {} fragments outputted but their {} '
                                    'values all failed against the {} before the draw of {:.4}.\n\n '
-                                   'No previous draw was detected that wrote that depth value.'
-                            .format(covered, len(this_draw), pre_draw_depth),
+                                   'No previous draw was detected that wrote that {} value.'
+                            .format(covered, len(this_draw), val_name, val_name, pre_draw_val, val_name),
                             'pixel_history': history,
                         })
             else:
@@ -514,12 +522,124 @@ class Analysis:
         self.tex_display.overlay = rd.DebugOverlay.Depth if depth_func is not None else rd.DebugOverlay.Stencil
 
         self.analysis_steps.append({
-            'msg': 'This drawcall appears to be failing the depth test normally. Check to see what else '
+            'msg': 'This drawcall appears to be failing the {} normally. Check to see what else '
                    'rendered before it, and whether it should be occluded or if something else is in the '
-                   'way.',
+                   'way.'.format(test_name),
             # copy the TextureDisplay object so we can modify it without changing the one in this step
             'tex_display': rd.TextureDisplay(self.tex_display),
         })
+
+    def check_failed_stencil(self):
+        self.analysis_steps.append({
+            'msg': 'The stencil test overlay shows red, so the draw is completely failing a stencil test.',
+            # copy the TextureDisplay object so we can modify it without changing the one in this step
+            'tex_display': rd.TextureDisplay(self.tex_display),
+        })
+
+        # Get the cull mode. If culling is enabled we know which stencil state is in use and can narrow our analysis,
+        # if culling is disabled then unfortunately we can't automatically narrow down which side is used.
+        cull_mode = rd.CullMode.NoCull
+        front = back = rd.StencilFace()
+        if self.api == rd.GraphicsAPI.OpenGL:
+            cull_mode = self.glpipe.rasterizer.state.cullMode
+            front = self.glpipe.stencilState.frontFace
+            back = self.glpipe.stencilState.backFace
+        elif self.api == rd.GraphicsAPI.Vulkan:
+            cull_mode = self.vkpipe.rasterizer.cullMode
+            front = self.vkpipe.depthStencil.frontFace
+            back = self.vkpipe.depthStencil.backFace
+        elif self.api == rd.GraphicsAPI.D3D11:
+            cull_mode = self.d3d11pipe.rasterizer.state.cullMode
+            front = self.d3d11pipe.outputMerger.depthStencilState.frontFace
+            back = self.d3d11pipe.outputMerger.depthStencilState.backFace
+        elif self.api == rd.GraphicsAPI.D3D12:
+            cull_mode = self.d3d12pipe.rasterizer.state.cullMode
+            front = self.d3d12pipe.outputMerger.depthStencilState.frontFace
+            back = self.d3d12pipe.outputMerger.depthStencilState.backFace
+
+        # To simplify code, we're going to check if both faces are the same anyway so if one side is being culled we
+        # just pretend that face has the same state as the other (which isn't culled)
+        if cull_mode == rd.CullMode.Front:
+            front = back
+        elif cull_mode == rd.CullMode.Back:
+            back = front
+
+        # Each of these checks below will check for two cases: first that the states are the same between front and
+        # back, meaning EITHER that both were the same in the application so we don't need to know whether front or
+        # back faces are in the draw, OR that one face is being culled so after we've eliminated a backface culling
+        # possibility a stencil failure must be from the other face.
+        #
+        # In this first case, we can be sure of the problem.
+        #
+        # In the second case we check if one of the states matches, in which case we can't be sure of the problem but
+        # we can alert the users about it. This potentially has false positives if e.g. someone doesn't set backface
+        # culling but also doesn't configure the backface stencil state.
+
+        def check_faces(msg: str, check: Callable[[rd.StencilFace], None]):
+            checks = check(front), check(back)
+
+            if all(checks):
+                self.analysis_steps.append({
+                    'msg': msg.format(test='test', s=front),
+                    'pipe_stage': qrd.PipelineStage.StencilTest,
+                })
+
+                raise AnalysisFinished
+            elif checks[0]:
+                msg += ' If your draw relies on back faces then this could be the problem.'
+                self.analysis_steps.append({
+                    'msg': msg.format(test='back face test', s=front),
+                    'pipe_stage': qrd.PipelineStage.StencilTest,
+                })
+            elif checks[1]:
+                msg += ' If your draw relies on front faces then this could be the problem.'
+                self.analysis_steps.append({
+                    'msg': msg.format(test='front face test', s=back),
+                    'pipe_stage': qrd.PipelineStage.StencilTest,
+                })
+
+        # Check simple cases that can't ever be true
+        check_faces('The stencil {test} is set to Never, meaning it always fails.',
+                    lambda x: x.function == rd.CompareFunction.Never)
+        check_faces('The stencil {test} is set to {s.function} than {s.reference}, which is impossible.',
+                    lambda x: (x.function == rd.CompareFunction.Less and x.reference == 0) or (
+                            x.function == rd.CompareFunction.Greater and x.reference == 255))
+        check_faces('The stencil {test} is set to {s.function} than {s.reference}, which is impossible.',
+                    lambda x: (x.function == rd.CompareFunction.LessEqual and x.reference < 0) or (
+                            x.function == rd.CompareFunction.GreaterEqual and x.reference > 255))
+
+        # compareMask being 0 is almost certainly a problem, but we can't *prove* it except in certain circumstances.
+        # e.g. having a compareMask of 0 and a reference of 0 would pass, or less than a non-zero reference.
+        # Fortunately, most of the cases we can prove will catch common errors. At least errors that cause a draw to
+        # not show up.
+
+        # if the compareMask is set such that the reference value can never be achieved, that's a guaranteed failure
+        check_faces(
+            'The stencil {test} is set to compare equal to {s.reference}, but the compare mask is {s.compareMask:x} '
+            'meaning it never can.',
+            lambda x: x.function == rd.CompareFunction.Equal and (
+                        (x.compareMask & x.reference) != x.reference) and x.reference != 0)
+
+        # The compareMask is the largest value that can be read, if the test is such that only larger values would pass,
+        # that's also broken.
+        check_faces(
+            'The stencil {test} is set to compare greater than {s.reference}, but the compare mask is '
+            '{s.compareMask:x} meaning it never can.',
+            lambda x: x.function == rd.CompareFunction.Greater and x.compareMask <= x.reference)
+        check_faces(
+            'The stencil {test} is set to compare greater than or equal to {s.reference}, but the compare mask is '
+            '{s.compareMask:x} meaning it never can.',
+            lambda x: x.function == rd.CompareFunction.GreaterEqual and x.compareMask < x.reference)
+
+        # Equal stencil testing is often used but not equal is rare - flag it too
+        try:
+            check_faces('The stencil {test} is set to Not Equal, which is not a problem but is unusual.',
+                        lambda x: x.function == rd.CompareFunction.Never)
+        except AnalysisFinished:
+            # we're not actually finished even if both faces were not equal!
+            pass
+
+        self.check_previous_depth_stencil(None)
 
     def get_steps(self):
         return self.analysis_steps
