@@ -120,6 +120,8 @@ class Analysis:
         finally:
             self.out.Shutdown()
 
+            self.r.SetFrameEvent(self.eid, False)
+
     def check_draw(self):
         # Render a highlight overlay on the first target. If no color targets are bound this will be the depth
         # target.
@@ -161,7 +163,7 @@ class Analysis:
             # Other invalid render areas outside of attachment dimensions would be invalid behaviour that renderdoc
             # doesn't account for
 
-        texmin, texmax = self.get_overlay_minmax(self.tex_display, rd.DebugOverlay.Drawcall)
+        texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Drawcall)
 
         if texmax.floatValue[0] < 0.5:
             self.check_offscreen()
@@ -177,9 +179,9 @@ class Analysis:
 
         raise AnalysisFinished
 
-    def get_overlay_minmax(self, tex_display, overlay: rd.DebugOverlay):
-        tex_display.overlay = overlay
-        self.out.SetTextureDisplay(tex_display)
+    def get_overlay_minmax(self, overlay: rd.DebugOverlay):
+        self.tex_display.overlay = overlay
+        self.out.SetTextureDisplay(self.tex_display)
         overlay = self.out.GetDebugOverlayTexID()
         return self.r.GetMinMax(overlay, rd.Subresource(), rd.CompType.Typeless)
 
@@ -220,7 +222,7 @@ class Analysis:
                 # Regardless of whether we finihsed the analysis above, don't do any more checking.
                 raise AnalysisFinished
 
-        texmin, texmax = self.get_overlay_minmax(self.tex_display, rd.DebugOverlay.BackfaceCull)
+        texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.BackfaceCull)
 
         # If there are no green pixels at all, this completely failed
         if texmax.floatValue[1] < 0.5:
@@ -229,7 +231,7 @@ class Analysis:
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
 
-        texmin, texmax = self.get_overlay_minmax(self.tex_display, rd.DebugOverlay.Depth)
+        texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Depth)
 
         # If there are no green pixels at all, this completely failed
         if texmax.floatValue[1] < 0.5:
@@ -238,7 +240,7 @@ class Analysis:
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
 
-        texmin, texmax = self.get_overlay_minmax(self.tex_display, rd.DebugOverlay.Stencil)
+        texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Stencil)
 
         # If there are no green pixels at all, this completely failed
         if texmax.floatValue[1] < 0.5:
@@ -400,6 +402,72 @@ class Analysis:
                        'checking if you haven\'t set this up deliberately:\n\n{}'.format(blend_warnings),
                 'pipe_stage': qrd.PipelineStage.Blending,
             })
+
+        # Nothing else has indicated a problem. Let's try the clear before draw on black and white backgrounds. If we
+        # see any change that will tell us that the draw is working but perhaps outputting the color that's already
+        # there.
+        for t in targets:
+            if t.resourceId != rd.ResourceId():
+                for sample in range(self.get_tex(t.resourceId).msSamp):
+                    self.tex_display.resourceId = t.resourceId
+                    self.tex_display.subresource = rd.Subresource(t.firstMip, t.firstSlice, sample)
+                    self.tex_display.backgroundColor = rd.FloatVector(0.0, 0.0, 0.0, 0.0)
+                    self.tex_display.rangeMin = 0.0
+                    self.tex_display.rangeMax = 1.0
+
+                    self.get_overlay_minmax(rd.DebugOverlay.ClearBeforeDraw)
+                    texmin, texmax = self.r.GetMinMax(t.resourceId, rd.Subresource(), t.typeCast)
+
+                    tex_desc = self.get_tex(t.resourceId)
+
+                    c = min(3, tex_desc.format.compCount)
+
+                    if any([_ != 0.0 for _ in texmin.floatValue[0:c]]) or \
+                       any([_ != 0.0 for _ in texmax.floatValue[0:c]]):
+                        self.analysis_steps.append({
+                            'msg': 'The target {} did show a change in RGB when selecting the \'clear before draw\' overlay '
+                                   'on a black background. Perhaps your shader is outputting the color that is already '
+                                   'there?'.format(t.resourceId),
+                            'tex_display': rd.TextureDisplay(self.tex_display)
+                        })
+
+                        raise AnalysisFinished
+
+                    if tex_desc.format.compCount == 4 and (texmin.floatValue[3] != 0.0 or texmax.floatValue[3] != 0.0):
+                        self.analysis_steps.append({
+                            'msg': 'The target {} did show a change in alpha when selecting the \'clear before draw\' '
+                                   'overlay on a black background. Perhaps your shader is outputting the color that is '
+                                   'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
+                            'tex_display': rd.TextureDisplay(self.tex_display
+                        })
+
+                        raise AnalysisFinished
+
+                    self.tex_display.backgroundColor = rd.FloatVector(1.0, 1.0, 1.0, 1.0)
+
+                    self.get_overlay_minmax(rd.DebugOverlay.ClearBeforeDraw)
+                    texmin, texmax = self.r.GetMinMax(t.resourceId, rd.Subresource(), t.typeCast)
+
+                    if any([_ != 1.0 for _ in texmin.floatValue[0:c]]) or \
+                       any([_ != 1.0 for _ in texmax.floatValue[0:c]]):
+                        self.analysis_steps.append({
+                            'msg': 'The target {} did show a change when selecting the \'clear before draw\' overlay '
+                                   'on a white background. Perhaps your shader is outputting the color that is already '
+                                   'there?'.format(t.resourceId),
+                            'tex_display': rd.TextureDisplay(self.tex_display)
+                        })
+
+                        raise AnalysisFinished
+
+                    if tex_desc.format.compCount == 4 and (texmin.floatValue[3] != 1.0 or texmax.floatValue[3] != 1.0):
+                        self.analysis_steps.append(ResultStep(
+                            'msg': 'The target {} did show a change in alpha when selecting the \'clear before draw\' '
+                                   'overlay on a white background. Perhaps your shader is outputting the color that is '
+                                   'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
+                            'tex_display': rd.TextureDisplay(self.tex_display)
+                        })
+
+                        raise AnalysisFinished
 
         # No obvious failures, if we can run a pixel history let's see if the shader discarded
         if self.api_properties.pixelHistory:
