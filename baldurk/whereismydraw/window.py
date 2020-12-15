@@ -29,6 +29,13 @@ from . import analyse
 mqt: qrd.MiniQtHelper
 
 
+def format_mod(mod: rd.ModificationValue):
+    if mod.stencil < 0:
+        return 'Depth: {:.4}\n'.format(mod.depth)
+    else:
+        return 'Depth: {:.4} Stencil: {:02x}\n'.format(mod.depth, mod.stencil)
+
+
 class Window(qrd.CaptureViewer):
     def __init__(self, ctx: qrd.CaptureContext, version: str):
         super().__init__()
@@ -221,6 +228,58 @@ class Window(qrd.CaptureViewer):
             text += 'Can\'t display visualisation for this step while another event {}: {} is selected'\
                 .format(selected_eid, selected_draw.name)
 
+        if step.pixel_history.id != rd.ResourceId():
+            text += '\n\n'
+            text += 'Full pixel history results at {},{} on {}:\n\n'.format(step.pixel_history.x, step.pixel_history.y,
+                                                                            step.pixel_history.id)
+
+            # filter the history only to the event in question, and the last prior passing event.
+            history = [h for h in step.pixel_history.history if
+                       h.eventId == self.eid or h.eventId == step.pixel_history.last_eid]
+
+            # remove any failing fragments from the previous draw
+            history = [h for h in history if h.Passed() or h.eventId == self.eid]
+
+            # remove all but the last fragment from the previous draw
+            while len(history) > 2 and history[0].eventId == history[1].eventId == step.pixel_history.last_eid:
+                del history[0]
+
+            prev_eid = 0
+
+            for h in history:
+                d = self.ctx.GetDrawcall(h.eventId)
+
+                if d is None:
+                    d = rd.DrawcallDescription()
+
+                if prev_eid != h.eventId:
+                    text += "* {}: {}\n".format(h.eventId, d.name)
+                    prev_eid = h.eventId
+
+                prim = 'Unknown primitive'
+                if h.primitiveID != 0xffffffff:
+                    prim = 'Primitive {}'.format(h.primitiveID)
+                text += '  - {}:\n'.format(prim)
+                text += '    Before: {}'.format(format_mod(h.preMod))
+                text += '    Fragment: Depth: {:.4}\n'.format(h.shaderOut.depth)
+                if h.sampleMasked:
+                    text += '    The sample mask did not include this sample.\n'
+                elif h.backfaceCulled:
+                    text += '    The primitive was backface culled.\n'
+                elif h.depthClipped:
+                    text += '    The fragment was clipped by near/far plane.\n'
+                elif h.depthBoundsFailed:
+                    text += '    The fragment was clipped by the depth bounds.\n'
+                elif h.scissorClipped:
+                    text += '    The fragment was clipped by the scissor region.\n'
+                elif h.shaderDiscarded:
+                    text += '    The pixel shader discarded this fragment.\n'
+                elif h.depthTestFailed:
+                    text += '    The fragment failed the depth test outputting.\n'
+                elif h.stencilTestFailed:
+                    text += '    The fragment failed the stencil test.\n'
+                text += '    After: {}'.format(format_mod(h.postMod))
+
         mqt.SetWidgetText(self.resultsText, text)
 
     def goto_details(self):
@@ -234,7 +293,7 @@ class Window(qrd.CaptureViewer):
             self.ctx.RaiseDockWindow(panel.Widget())
             return
 
-        if step.tex_display.ResourceId != rd.ResourceId.Null():
+        if step.tex_display.resourceId != rd.ResourceId.Null():
             self.ctx.ShowTextureViewer()
             panel = self.ctx.GetTextureViewer()
             panel.ViewTexture(step.tex_display.resourceId, step.tex_display.typeCast, True)

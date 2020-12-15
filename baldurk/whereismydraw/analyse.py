@@ -37,6 +37,7 @@ class PixelHistoryData:
         self.id = rd.ResourceId()
         self.tex_display = rd.TextureDisplay()
         self.history: List[rd.PixelModification] = []
+        self.last_eid = 0
 
 
 class ResultStep:
@@ -876,6 +877,7 @@ class Analysis:
                     history_package.tex_display.resourceId = self.targets[-1].resourceId
                     history_package.tex_display.subresource = sub
                     history_package.tex_display.typeCast = self.targets[-1].typeCast
+                    history_package.last_eid = last_draw_eid
                     history_package.history = history
 
                     if last_draw_eid > 0:
