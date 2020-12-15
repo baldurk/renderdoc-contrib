@@ -155,14 +155,18 @@ class Window(qrd.CaptureViewer):
     def start_analysis(self):
         self.eid = self.ctx.CurEvent()
         print("Analysing {}".format(self.eid))
-        mqt.SetWidgetText(self.analyseLabel, "Analysis in progress, please wait!")
         mqt.SetWidgetEnabled(self.analyseButton, False)
+
+        mqt.SetWidgetText(self.resultsText, "Analysis in progress, please wait!")
+        mqt.SetWidgetVisible(self.resultsNavigationBar, False)
+        mqt.SetWidgetVisible(self.texOutWidget, False)
+        mqt.SetWidgetVisible(self.meshOutWidget, False)
+        mqt.SetWidgetVisible(self.resultsSpacer, True)
 
         analyse.analyse_draw(self.ctx, self.eid, lambda results: self.finish_analysis(results))
 
     def finish_analysis(self, results):
         print("Analysis finished")
-        mqt.SetWidgetText(self.analyseLabel, "")
         mqt.SetWidgetEnabled(self.analyseButton, True)
 
         mqt.SetWidgetVisible(self.resultsNavigationBar, True)
