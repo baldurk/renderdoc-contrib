@@ -201,6 +201,15 @@ class Analysis:
             # Other invalid render areas outside of attachment dimensions would be invalid behaviour that renderdoc
             # doesn't account for
 
+        v = self.pipe.GetViewport(0)
+
+        if v.width == 0 or v.height == 0:
+            self.analysis_steps.append(
+                ResultStep(msg='The viewport is {}x{} so nothing will be rendered.'.format(v.width, v.height),
+                           pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
+            raise AnalysisFinished
+
         texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Drawcall)
 
         if texmax.floatValue[0] < 0.5:
