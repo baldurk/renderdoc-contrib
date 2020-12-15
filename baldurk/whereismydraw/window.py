@@ -36,6 +36,7 @@ class Window(qrd.CaptureViewer):
         print("Creating WIMD window")
 
         self.ctx = ctx
+        self.version = version
         self.topWindow = mqt.CreateToplevelWidget("Where is my Draw?", lambda c, w, d: closed())
 
         vert = mqt.CreateVerticalContainer()
@@ -142,6 +143,8 @@ class Window(qrd.CaptureViewer):
             mqt.SetWidgetText(self.analyseButton, "Can't analyse {}, select a draw".format(event))
             mqt.SetWidgetEnabled(self.analyseButton, False)
 
+        self.refresh_result()
+
     def start_analysis(self):
         self.eid = self.ctx.CurEvent()
         print("Analysing {}".format(self.eid))
@@ -173,72 +176,89 @@ class Window(qrd.CaptureViewer):
         self.refresh_result()
 
     def refresh_result(self):
-        r = self.results[self.cur_result]
+        step = analyse.ResultStep()
+        if self.cur_result in range(len(self.results)):
+            step = self.results[self.cur_result]
 
         mqt.SetWidgetEnabled(self.resultsPrev, self.cur_result > 0)
         mqt.SetWidgetEnabled(self.resultsNext, self.cur_result < len(self.results) - 1)
 
-        mqt.SetWidgetEnabled(self.showDetails,
-                             any(x in r for x in ['pipe_stage', 'tex_display', 'mesh_view', 'pixel_history']))
+        mqt.SetWidgetEnabled(self.showDetails, step.has_details())
 
         draw: rd.DrawcallDescription = self.ctx.GetDrawcall(self.eid)
 
-        text = "Results for draw {}: {}. Analysis step {} of {}".format(self.eid, draw.name, self.cur_result + 1,
-                                                                        len(self.results))
-        text += '\n\n'
-        text += r['msg']
-
-        mqt.SetWidgetText(self.resultsText, text)
+        if draw:
+            text = "Results for draw {}: {}. Analysis step {} of {}".format(self.eid, draw.name, self.cur_result + 1,
+                                                                            len(self.results))
+            text += '\n\n'
+            text += step.msg
+        else:
+            text = ''
 
         mqt.SetWidgetVisible(self.texOutWidget, False)
         mqt.SetWidgetVisible(self.meshOutWidget, False)
         mqt.SetWidgetVisible(self.resultsSpacer, True)
 
-        if 'tex_display' in r:
-            tex: rd.TextureDisplay = r['tex_display']
+        display = False
 
-            self.ctx.Replay().AsyncInvoke('', lambda _: self.texOut.SetTextureDisplay(tex))
+        if step.tex_display.resourceId != rd.ResourceId.Null():
+            display = True
+
+            self.ctx.Replay().AsyncInvoke('', lambda _: self.texOut.SetTextureDisplay(step.tex_display))
 
             mqt.SetWidgetVisible(self.texOutWidget, True)
             mqt.SetWidgetVisible(self.resultsSpacer, False)
 
-    def goto_details(self):
-        r = self.results[self.cur_result]
+        if display and self.eid != self.ctx.CurEvent():
+            mqt.SetWidgetVisible(self.texOutWidget, False)
+            mqt.SetWidgetVisible(self.meshOutWidget, False)
+            mqt.SetWidgetVisible(self.resultsSpacer, True)
 
-        if 'pipe_stage' in r:
+            selected_eid = self.ctx.CurEvent()
+            selected_draw = self.ctx.GetDrawcall(selected_eid)
+
+            text += '\n\n'
+            text += 'Can\'t display visualisation for this step while another event {}: {} is selected'\
+                .format(selected_eid, selected_draw.name)
+
+        mqt.SetWidgetText(self.resultsText, text)
+
+    def goto_details(self):
+        step: analyse.ResultStep = self.results[self.cur_result]
+
+        if step.pipe_stage != qrd.PipelineStage.ComputeShader:
             self.ctx.ShowPipelineViewer()
             panel = self.ctx.GetPipelineViewer()
-            panel.SelectPipelineStage(r['pipe_stage'])
+            panel.SelectPipelineStage(step.pipe_stage)
 
             self.ctx.RaiseDockWindow(panel.Widget())
             return
 
-        if 'tex_display' in r:
-            tex: rd.TextureDisplay = r['tex_display']
+        if step.tex_display.ResourceId != rd.ResourceId.Null():
             self.ctx.ShowTextureViewer()
             panel = self.ctx.GetTextureViewer()
-            panel.ViewTexture(tex.resourceId, tex.typeCast, True)
-            panel.SetSelectedSubresource(tex.subresource)
-            panel.SetTextureOverlay(tex.overlay)
+            panel.ViewTexture(step.tex_display.resourceId, step.tex_display.typeCast, True)
+            panel.SetSelectedSubresource(step.tex_display.subresource)
+            panel.SetTextureOverlay(step.tex_display.overlay)
             panel.SetZoomLevel(True, 1.0)
 
             self.ctx.RaiseDockWindow(panel.Widget())
             return
 
-        if 'mesh_view' in r:
+        if step.mesh_view != rd.MeshDataStage.Unknown:
             self.ctx.ShowMeshPreview()
             panel = self.ctx.GetMeshPreview()
-            panel.ScrollToRow(0, r['mesh_view'])
+            panel.ScrollToRow(0, step.mesh_view)
 
-            panel.SetPreviewStage(r['mesh_view'])
+            panel.SetPreviewStage(step.mesh_view)
 
             self.ctx.RaiseDockWindow(panel.Widget())
             return
 
-        if 'pixel_history' in r:
-            history = r['pixel_history']
-            panel = self.ctx.ViewPixelHistory(history['id'], history['x'], history['y'], history['tex_display'])
-            panel.SetHistory(history['history'])
+        if step.pixel_history.id != rd.ResourceId():
+            panel = self.ctx.ViewPixelHistory(step.pixel_history.id, step.pixel_history.x, step.pixel_history.y,
+                                              step.pixel_history.tex_display)
+            panel.SetHistory(step.pixel_history.history)
 
             self.ctx.AddDockWindow(panel.Widget(), qrd.DockReference.AddTo, self.topWindow)
             return

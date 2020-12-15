@@ -27,7 +27,33 @@ import renderdoc as rd
 import struct
 import math
 import random
-from typing import Callable, Tuple
+from typing import Callable, Tuple, List
+
+
+class PixelHistoryData:
+    def __init__(self):
+        self.x = 0
+        self.y = 0
+        self.id = rd.ResourceId()
+        self.tex_display = rd.TextureDisplay()
+        self.history: List[rd.PixelModification] = []
+
+
+class ResultStep:
+    def __init__(self, *, msg='', tex_display=rd.TextureDisplay(), pixel_history=PixelHistoryData(),
+                 pipe_stage=qrd.PipelineStage.ComputeShader, mesh_view=rd.MeshDataStage.Unknown):
+        self.msg = msg
+        # force copy the input, so it can be modified without changing the one in this step
+        self.tex_display = rd.TextureDisplay(tex_display)
+        self.pixel_history = pixel_history
+        self.pipe_stage = pipe_stage
+        self.mesh_view = mesh_view
+
+    def has_details(self) -> bool:
+        return self.tex_display.resourceId != rd.ResourceId() or \
+               self.pixel_history.id != rd.ResourceId() or \
+               self.pipe_stage != qrd.PipelineStage.ComputeShader or \
+               self.mesh_view != rd.MeshDataStage.Unknown
 
 
 class AnalysisFinished(Exception):
@@ -108,26 +134,22 @@ class Analysis:
 
             # If there are no bound targets at all, stop as there's no rendering we can analyse
             if len(self.targets) == 0:
-                self.analysis_steps.append({
-                    'msg': 'No output render targets or depth target are bound at {}.'.format(self.eid)
-                })
+                self.analysis_steps.append(
+                    ResultStep(msg='No output render targets or depth target are bound at {}.'.format(self.eid)))
 
                 raise AnalysisFinished
 
             # if the drawcall has a parameter which means no work happens, alert the user
             if (self.drawcall.flags & rd.DrawFlags.Instanced) and self.drawcall.numInstances == 0:
-                self.analysis_steps.append({
-                    'msg': 'The drawcall {} is instanced, but the number of instances specified is 0.'
-                    .format(self.drawcall.name)
-                })
+                self.analysis_steps.append(ResultStep(msg='The drawcall {} is instanced, but the number of instances '
+                                                          'specified is 0.'.format(self.drawcall.name)))
 
                 raise AnalysisFinished
 
             if self.drawcall.numIndices == 0:
-                self.analysis_steps.append({
-                    'msg': 'The drawcall {} specifies 0 {}.'
-                    .format(self.drawcall.name, 'indices' if self.drawcall.flags & rd.DrawFlags.Indexed else 'vertices')
-                })
+                vert_name = 'indices' if self.drawcall.flags & rd.DrawFlags.Indexed else 'vertices'
+                self.analysis_steps.append(
+                    ResultStep(msg='The drawcall {} specifies 0 {}.'.format(self.drawcall.name, vert_name)))
 
                 raise AnalysisFinished
 
@@ -169,11 +191,9 @@ class Analysis:
 
             # if the render area is empty that's certainly not intentional.
             if ra.width == 0 or ra.height == 0:
-                self.analysis_steps.append({
-                    'msg': 'The render area is {}x{} so nothing will be rendered.'
-                    .format(ra.width, ra.height),
-                    'pipe_stage': qrd.PipelineStage.ViewportsScissors,
-                })
+                self.analysis_steps.append(
+                    ResultStep(msg='The render area is {}x{} so nothing will be rendered.'.format(ra.width, ra.height),
+                               pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
                 raise AnalysisFinished
 
@@ -188,11 +208,9 @@ class Analysis:
             self.check_onscreen()
 
         # If we got here, we didn't find a specific problem! Add a note about that
-        self.analysis_steps.append({
-            'msg': 'Sorry, I couldn\'t figure out what was wrong! Please report an issue to see if this is '
-                   'something that should be added to my checks. You can see what I checked by clicking through '
-                   'the steps.',
-        })
+        self.analysis_steps.append(ResultStep(msg='Sorry, I couldn\'t figure out what was wrong! Please report an '
+                                                  'issue to see if this is something that should be added to my '
+                                                  'checks. You can see what I checked by clicking through the steps.'))
 
         raise AnalysisFinished
 
@@ -210,12 +228,9 @@ class Analysis:
         return self.r.GetHistogram(overlay, rd.Subresource(), rd.CompType.Typeless, minmax[0], minmax[1], channels)
 
     def check_onscreen(self):
-        self.analysis_steps.append({
-            'msg': 'The highlight drawcall overlay shows the draw, meaning it is rendering but failing some '
-                   'tests.',
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='The highlight drawcall overlay shows the draw, meaning it is rendering but failing some tests.',
+            tex_display=self.tex_display))
 
         # It's on-screen we debug the rasterization/testing/blending states
 
@@ -286,32 +301,26 @@ class Analysis:
             sample_mask = self.d3d12pipe.rasterizer.sampleMask
 
         if sample_mask == 0:
-            self.analysis_steps.append({
-                'msg': 'The sample mask is set to 0, which will discard all samples.',
-                # copy the TextureDisplay object so we can modify it without changing the one in this step
-                'pipe_stage': qrd.PipelineStage.Rasterizer,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='The sample mask is set to 0, which will discard all samples.',
+                pipe_stage=qrd.PipelineStage.Rasterizer))
 
         # On GL, check the sample coverage value for MSAA targets
         if self.api == rd.GraphicsAPI.OpenGL:
             rs_state = self.glpipe.rasterizer.state
             if sample_count > 1 and rs_state.multisampleEnable and rs_state.sampleCoverage:
                 if rs_state.sampleCoverageInvert and rs_state.sampleCoverageValue >= 1.0:
-                    self.analysis_steps.append({
-                        'msg': 'Sample coverage is enabled, set to invert, and the value is {}. This results in a '
-                               'coverage mask of 0.'.format(rs_state.sampleCoverageValue),
-                        # copy the TextureDisplay object so we can modify it without changing the one in this step
-                        'pipe_stage': qrd.PipelineStage.Rasterizer,
-                    })
+                    self.analysis_steps.append(ResultStep(
+                        msg='Sample coverage is enabled, set to invert, and the value is {}. This results in a '
+                            'coverage mask of 0.'.format(rs_state.sampleCoverageValue),
+                        pipe_stage=qrd.PipelineStage.Rasterizer))
 
                     raise AnalysisFinished
                 elif not rs_state.sampleCoverageInvert and rs_state.sampleCoverageValue <= 0.0:
-                    self.analysis_steps.append({
-                        'msg': 'Sample coverage is enabled, and the value is {}. This results in a '
-                               'coverage mask of 0.'.format(rs_state.sampleCoverageValue),
-                        # copy the TextureDisplay object so we can modify it without changing the one in this step
-                        'pipe_stage': qrd.PipelineStage.Rasterizer,
-                    })
+                    self.analysis_steps.append(ResultStep(
+                        msg='Sample coverage is enabled, and the value is {}. This results in a '
+                            'coverage mask of 0.'.format(rs_state.sampleCoverageValue),
+                        pipe_stage=qrd.PipelineStage.Rasterizer))
 
                     raise AnalysisFinished
 
@@ -350,31 +359,28 @@ class Analysis:
         # if all color masks are disabled, at least warn - or consider the case solved if depth writes are also disabled
         if not any(enabled_color_masks):
             if depth_writes:
-                self.analysis_steps.append({
-                    'msg': 'All bound output targets have a write mask set to 0 - which means no color will be '
-                           'written.\n\n '
-                           'This may not be the problem if no color output is expected, as depth writes are enabled.',
-                    'pipe_stage': qrd.PipelineStage.Blending,
-                })
+                self.analysis_steps.append(ResultStep(
+                    msg='All bound output targets have a write mask set to 0 - which means no color will be '
+                        'written.\n\n '
+                        'This may not be the problem if no color output is expected, as depth writes are enabled.',
+                    pipe_stage=qrd.PipelineStage.Blending))
             else:
-                self.analysis_steps.append({
-                    'msg': 'All bound output targets have a write mask set to 0 - which means no color will be '
-                           'written.\n\n '
-                           'Depth writes are also disabled so this draw will not output anything.',
-                    'pipe_stage': qrd.PipelineStage.Blending,
-                })
+                self.analysis_steps.append(ResultStep(
+                    msg='All bound output targets have a write mask set to 0 - which means no color will be '
+                        'written.\n\n '
+                        'Depth writes are also disabled so this draw will not output anything.',
+                    pipe_stage=qrd.PipelineStage.Blending))
 
                 raise AnalysisFinished
 
         # if only some color masks are disabled, alert the user since they may be wondering why nothing is being output
         # to that target
         elif not all(enabled_color_masks):
-            self.analysis_steps.append({
-                'msg': 'Some output targets have a write mask set to 0 - which means no color will be '
-                       'written to those targets.\n\n '
-                       'This may not be a problem if no color output is expected on those targets.',
-                'pipe_stage': qrd.PipelineStage.Blending,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='Some output targets have a write mask set to 0 - which means no color will be '
+                    'written to those targets.\n\n '
+                    'This may not be a problem if no color output is expected on those targets.',
+                pipe_stage=qrd.PipelineStage.Blending))
 
         def is_zero(mul: rd.BlendMultiplier):
             if mul == rd.BlendMultiplier.Zero:
@@ -414,11 +420,10 @@ class Analysis:
                                           'is no-op.\n'.format(i)
 
         if blend_warnings != '':
-            self.analysis_steps.append({
-                'msg': 'Some color blending state is strange, but not necessarily unintentional. This is worth '
-                       'checking if you haven\'t set this up deliberately:\n\n{}'.format(blend_warnings),
-                'pipe_stage': qrd.PipelineStage.Blending,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='Some color blending state is strange, but not necessarily unintentional. This is worth '
+                    'checking if you haven\'t set this up deliberately:\n\n{}'.format(blend_warnings),
+                pipe_stage=qrd.PipelineStage.Blending))
 
         # Nothing else has indicated a problem. Let's try the clear before draw on black and white backgrounds. If we
         # see any change that will tell us that the draw is working but perhaps outputting the color that's already
@@ -441,22 +446,20 @@ class Analysis:
 
                     if any([_ != 0.0 for _ in texmin.floatValue[0:c]]) or \
                        any([_ != 0.0 for _ in texmax.floatValue[0:c]]):
-                        self.analysis_steps.append({
-                            'msg': 'The target {} did show a change in RGB when selecting the \'clear before draw\' overlay '
-                                   'on a black background. Perhaps your shader is outputting the color that is already '
-                                   'there?'.format(t.resourceId),
-                            'tex_display': rd.TextureDisplay(self.tex_display)
-                        })
+                        self.analysis_steps.append(ResultStep(
+                            msg='The target {} did show a change in RGB when selecting the \'clear before draw\' '
+                                'overlay on a black background. Perhaps your shader is outputting the color that is '
+                                'already there?'.format(t.resourceId),
+                            tex_display=self.tex_display))
 
                         raise AnalysisFinished
 
                     if tex_desc.format.compCount == 4 and (texmin.floatValue[3] != 0.0 or texmax.floatValue[3] != 0.0):
-                        self.analysis_steps.append({
-                            'msg': 'The target {} did show a change in alpha when selecting the \'clear before draw\' '
-                                   'overlay on a black background. Perhaps your shader is outputting the color that is '
-                                   'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
-                            'tex_display': rd.TextureDisplay(self.tex_display
-                        })
+                        self.analysis_steps.append(ResultStep(
+                            msg='The target {} did show a change in alpha when selecting the \'clear before draw\' '
+                                'overlay on a black background. Perhaps your shader is outputting the color that is '
+                                'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
+                            tex_display=self.tex_display))
 
                         raise AnalysisFinished
 
@@ -467,22 +470,20 @@ class Analysis:
 
                     if any([_ != 1.0 for _ in texmin.floatValue[0:c]]) or \
                        any([_ != 1.0 for _ in texmax.floatValue[0:c]]):
-                        self.analysis_steps.append({
-                            'msg': 'The target {} did show a change when selecting the \'clear before draw\' overlay '
-                                   'on a white background. Perhaps your shader is outputting the color that is already '
-                                   'there?'.format(t.resourceId),
-                            'tex_display': rd.TextureDisplay(self.tex_display)
-                        })
+                        self.analysis_steps.append(ResultStep(
+                            msg='The target {} did show a change in RGB when selecting the \'clear before draw\' '
+                                'overlay on a white background. Perhaps your shader is outputting the color that is '
+                                'already there?'.format(t.resourceId),
+                            tex_display=self.tex_display))
 
                         raise AnalysisFinished
 
                     if tex_desc.format.compCount == 4 and (texmin.floatValue[3] != 1.0 or texmax.floatValue[3] != 1.0):
                         self.analysis_steps.append(ResultStep(
-                            'msg': 'The target {} did show a change in alpha when selecting the \'clear before draw\' '
-                                   'overlay on a white background. Perhaps your shader is outputting the color that is '
-                                   'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
-                            'tex_display': rd.TextureDisplay(self.tex_display)
-                        })
+                            msg='The target {} did show a change in alpha when selecting the \'clear before draw\' '
+                                'overlay on a white background. Perhaps your shader is outputting the color that is '
+                                'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
+                            tex_display=self.tex_display))
 
                         raise AnalysisFinished
 
@@ -524,11 +525,10 @@ class Analysis:
                 if len(history) == 0 or history[-1].eventId != self.eid:
                     continue
                 elif history[-1].Passed():
-                    self.analysis_steps.append({
-                        'msg': 'Running pixel history on {} it showed that a fragment passed.\n\n '
-                               'Double check if maybe the draw is outputting something but it\'s invisible '
-                               '(e.g. rendering black on black)'.format(covered),
-                    })
+                    self.analysis_steps.append(ResultStep(
+                        msg='Running pixel history on {} it showed that a fragment passed.\n\n '
+                            'Double check if maybe the draw is outputting something but it\'s invisible '
+                            '(e.g. rendering black on black)'.format(covered)))
                     break
                 else:
                     this_draw = [h for h in history if h.eventId == self.eid]
@@ -539,11 +539,10 @@ class Analysis:
                         discarded_pixels.append(covered)
 
             if len(discarded_pixels) > 0:
-                self.analysis_steps.append({
-                    'msg': 'Pixel history on {} pixels showed that in {} of them all fragments were discarded.\n\n '
-                           'This may not mean every other pixel discarded, but it is worth checking in case your '
-                           'shader is always discarding.'.format(attempts, len(discarded_pixels)),
-                })
+                self.analysis_steps.append(ResultStep(
+                    msg='Pixel history on {} pixels showed that in {} of them all fragments were discarded.\n\n '
+                        'This may not mean every other pixel discarded, but it is worth checking in case your '
+                        'shader is always discarding.'.format(attempts, len(discarded_pixels))))
 
     def check_failed_scissor(self):
         v = self.pipe.GetViewport(0)
@@ -556,49 +555,39 @@ class Analysis:
 
         # if the scissor is empty that's certainly not intentional.
         if s.width == 0 or s.height == 0:
-            self.analysis_steps.append({
-                'msg': 'The scissor region {},{} to {},{} is empty so nothing will be rendered.'
+            self.analysis_steps.append(ResultStep(
+                msg='The scissor region {},{} to {},{} is empty so nothing will be rendered.'
                 .format(s.x, s.y, s_right, s_bottom),
-                'pipe_stage': qrd.PipelineStage.ViewportsScissors,
-            })
+                pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
             raise AnalysisFinished
 
         # If the scissor region doesn't intersect the viewport, that's a problem
         if s_right < v.x or s.x > v_right or s.x > v_right or s.y > v_bottom:
-            self.analysis_steps.append({
-                'msg': 'The scissor region {},{} to {},{} is completely outside the viewport of {},{} to {},{} so all '
-                       'pixels will be scissor clipped'
-                .format(s.x, s.y, s_right, s_bottom, v.x, v.y, v_right, v_bottom),
-                # copy the TextureDisplay object so we can modify it without changing the one in this step
-                'pipe_stage': qrd.PipelineStage.Rasterizer,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='The scissor region {},{} to {},{} is completely outside the viewport of {},{} to {},{} so all '
+                    'pixels will be scissor clipped'.format(s.x, s.y, s_right, s_bottom, v.x, v.y, v_right, v_bottom),
+                pipe_stage=qrd.PipelineStage.Rasterizer))
 
             raise AnalysisFinished
 
-        self.analysis_steps.append({
-            'msg': 'The draw is outside of the scissor region, so it has been clipped.\n\n'
-                   'If this isn\'t intentional, check your scissor state.',
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='The draw is outside of the scissor region, so it has been clipped.\n\n'
+                'If this isn\'t intentional, check your scissor state.',
+            pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
         raise AnalysisFinished
 
     def check_offscreen(self):
-        self.analysis_steps.append({
-            'msg': 'The highlight drawcall overlay shows nothing for this draw, meaning it is off-screen.',
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='The highlight drawcall overlay shows nothing for this draw, meaning it is off-screen.'))
 
         # Check rasterizer discard state
         if (self.glpipe and self.glpipe.vertexProcessing.discard) or (
                 self.vkpipe and self.vkpipe.rasterizer.rasterizerDiscardEnable):
-            self.analysis_steps.append({
-                'msg': 'Rasterizer discard is enabled. This API state disables rasterization for the drawcall.',
-                # copy the TextureDisplay object so we can modify it without changing the one in this step
-                'pipe_stage': qrd.PipelineStage.Rasterizer,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='Rasterizer discard is enabled. This API state disables rasterization for the drawcall.',
+                pipe_stage=qrd.PipelineStage.Rasterizer))
 
             raise AnalysisFinished
 
@@ -615,22 +604,17 @@ class Analysis:
         elif self.api == rd.GraphicsAPI.D3D12:
             cull_mode = self.d3d12pipe.rasterizer.state.cullMode
 
-        self.analysis_steps.append({
-            'msg': 'The backface culling overlay shows red, so the draw is completely backface culled.\n\n'
-                   'Check your polygon winding and front-facing state ({}).'.format(cull_mode),
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-            'pipe_stage': qrd.PipelineStage.Rasterizer,
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='The backface culling overlay shows red, so the draw is completely backface culled.\n\n'
+                'Check your polygon winding and front-facing state ({}).'.format(cull_mode),
+            tex_display=self.tex_display))
 
         raise AnalysisFinished
 
     def check_failed_depth(self):
-        self.analysis_steps.append({
-            'msg': 'The depth test overlay shows red, so the draw is completely failing a depth test.',
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='The depth test overlay shows red, so the draw is completely failing a depth test.',
+            tex_display=self.tex_display))
 
         # Gather API-specific state
         depth_func = rd.CompareFunction.AlwaysTrue
@@ -666,22 +650,19 @@ class Analysis:
             depth_clamp = not self.d3d12pipe.rasterizer.state.depthClip
 
         if not depth_enabled:
-            self.analysis_steps.append({
-                'msg': 'Depth test stage is disabled! Normally this means the depth test should always '
-                       'pass.\n\n'
-                       'Sorry I couldn\'t figure out the exact problem. Please check your {} '
-                       'setup and report an issue so we can narrow this down in future.',
-                'pipe_stage': qrd.PipelineStage.DepthTest,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='Depth test stage is disabled! Normally this means the depth test should always pass.\n\n'
+                    'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                    'setup and report an issue so we can narrow this down in future.',
+                pipe_stage=qrd.PipelineStage.DepthTest))
 
             raise AnalysisFinished
 
         # Check for state setups that will always fail
         if depth_func == rd.CompareFunction.Never:
-            self.analysis_steps.append({
-                'msg': 'Depth test is set to Never, meaning it always fails for this draw.',
-                'pipe_stage': qrd.PipelineStage.DepthTest,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='Depth test is set to Never, meaning it always fails for this draw.',
+                pipe_stage=qrd.PipelineStage.DepthTest))
 
             raise AnalysisFinished
 
@@ -695,44 +676,37 @@ class Analysis:
 
             # If the largest vertex NDC z is lower than the NDC range, the whole draw is near-plane clipped
             if vert_bounds[1] <= ndc_bounds[0]:
-                self.analysis_steps.append({
-                    'msg': 'All of the drawcall vertices are in front of the near plane, and the '
-                           'current {} state means these vertices get clipped.'.format(state_name),
-                    'pipe_stage': qrd.PipelineStage.Rasterizer,
-                    'mesh_view': self.postvs_stage,
-                })
+                self.analysis_steps.append(ResultStep(
+                    msg='All of the drawcall vertices are in front of the near plane, and the '
+                        'current {} state means these vertices get clipped.'.format(state_name),
+                    mesh_view=self.postvs_stage))
 
                 raise AnalysisFinished
 
             # Same for the smallest z being above the NDC range
             if vert_bounds[0] >= ndc_bounds[1]:
-                self.analysis_steps.append({
-                    'msg': 'All of the drawcall vertices are behind the far plane, and the '
-                           'current {} state means these vertices get clipped.'.format(state_name),
-                    'pipe_stage': qrd.PipelineStage.Rasterizer,
-                    'mesh_view': self.postvs_stage,
-                })
+                self.analysis_steps.append(ResultStep(
+                    msg='All of the drawcall vertices are behind the far plane, and the '
+                        'current {} state means these vertices get clipped.'.format(state_name),
+                        mesh_view=self.postvs_stage))
 
                 raise AnalysisFinished
 
         # If the vertex NDC z range does not intersect the depth bounds range, and depth bounds test is
         # enabled, the draw fails the depth bounds test
         if depth_bounds and (vert_bounds[0] > depth_bounds[1] or vert_bounds[1] < depth_bounds[0]):
-            self.analysis_steps.append({
-                'msg': 'All of the drawcall vertices are outside the depth bounds range ({} to {}), '
-                       'which is enabled'.format(depth_bounds[0], depth_bounds[1]),
-                'pipe_stage': qrd.PipelineStage.Rasterizer,
-                'mesh_view': self.postvs_stage,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='All of the drawcall vertices are outside the depth bounds range ({} to {}), '
+                    'which is enabled'.format(depth_bounds[0], depth_bounds[1]),
+                pipe_stage=qrd.PipelineStage.Rasterizer))
 
             raise AnalysisFinished
 
         # Equal depth testing is often used but not equal is rare - flag it too
         if depth_func == rd.CompareFunction.NotEqual:
-            self.analysis_steps.append({
-                'msg': 'The depth function of {} is not a problem but is unusual.'.format(depth_func),
-                'pipe_stage': qrd.PipelineStage.DepthTest,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='The depth function of {} is not a problem but is unusual.'.format(depth_func),
+                pipe_stage=qrd.PipelineStage.DepthTest))
 
         self.check_previous_depth_stencil(depth_func)
 
@@ -744,13 +718,11 @@ class Analysis:
         # If no depth buffer is bound, all APIs spec that depth/stencil test should always pass! This seems
         # quite strange.
         if self.depth.resourceId == rd.ResourceId.Null():
-            self.analysis_steps.append({
-                'msg': 'No depth buffer is bound! Normally this means the {} should always '
-                       'pass.\n\n'
-                       'Sorry I couldn\'t figure out the exact problem. Please check your {} '
-                       'setup and report an issue so we can narrow this down in future.'.format(test_name, test_name),
-                'pipe_stage': result_stage,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='No depth buffer is bound! Normally this means the {} should always pass.\n\n'
+                    'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                    'setup and report an issue so we can narrow this down in future.'.format(test_name, test_name),
+                pipe_stage=result_stage))
 
             raise AnalysisFinished
 
@@ -780,32 +752,29 @@ class Analysis:
 
                     # if the scissor is empty or outside the size of the target that's certainly not intentional.
                     if s.width == 0 or s.height == 0:
-                        self.analysis_steps.append({
-                            'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
-                                   '{},{} to {},{} is empty so nothing will get cleared.'
+                        self.analysis_steps.append(ResultStep(
+                            msg='The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
+                                '{},{} to {},{} is empty so nothing will get cleared.'
                             .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
-                            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
-                        })
+                            pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
                     if s.x >= self.target_descs[-1].width or s.y >= self.target_descs[-1].height:
-                        self.analysis_steps.append({
-                            'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
-                                   '{},{} to {},{} doesn\'t cover the depth-stencil target so it won\'t get cleared.'
+                        self.analysis_steps.append(ResultStep(
+                            msg='The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
+                                '{},{} to {},{} doesn\'t cover the depth-stencil target so it won\'t get cleared.'
                             .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
-                            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
-                        })
+                            pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
                     # if the clear's scissor doesn't overlap the viewport at the time of the draw,
                     # warn the user
                     elif v.x < s.x or v.y < s.y or v.x + v_right or v_bottom > s_bottom:
-                        self.analysis_steps.append({
-                            'msg': 'The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
-                                   '{},{} to {},{} is smaller than the current viewport {},{} to {},{}. '
-                                   'This may mean not every pixel was properly cleared.'
+                        self.analysis_steps.append(ResultStep(
+                            msg='The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
+                                '{},{} to {},{} is smaller than the current viewport {},{} to {},{}. '
+                                'This may mean not every pixel was properly cleared.'
                             .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom, v.x, v.y,
                                     v_right, v_bottom),
-                            'pipe_stage': qrd.PipelineStage.ViewportsScissors,
-                        })
+                            pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
             # If this was a clear then we expect the depth value to be uniform, so pick the pixel to
             # get the depth clear value.
@@ -819,14 +788,13 @@ class Analysis:
                 if clear_eid > 0 and (
                         clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.Greater) or (
                         clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
-                    self.analysis_steps.append({
-                        'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
-                               'function is {} which is impossible to pass.'.format(str(self.depth.resourceId),
-                                                                                    clear_eid,
-                                                                                    clear_color.floatValue[0],
-                                                                                    depth_func),
-                        'pipe_stage': qrd.PipelineStage.DepthTest,
-                    })
+                    self.analysis_steps.append(ResultStep(
+                        msg='The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                            'function is {} which is impossible to pass.'.format(str(self.depth.resourceId),
+                                                                                 clear_eid,
+                                                                                 clear_color.floatValue[0],
+                                                                                 depth_func),
+                        pipe_stage=qrd.PipelineStage.DepthTest))
 
                     raise AnalysisFinished
 
@@ -834,19 +802,17 @@ class Analysis:
                 if clear_eid > 0 and (
                         clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.GreaterEqual) or (
                         clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.LessEqual):
-                    self.analysis_steps.append({
-                        'msg': 'The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
-                               'function is {} which is highly unlikely to pass. This is worth checking'
+                    self.analysis_steps.append(ResultStep(
+                        msg='The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                            'function is {} which is highly unlikely to pass. This is worth checking'
                         .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], depth_func),
-                        'pipe_stage': qrd.PipelineStage.DepthTest,
-                    })
+                        pipe_stage=qrd.PipelineStage.DepthTest))
 
         # If there's no depth/stencil clear found at all, that's a red flag
         else:
-            self.analysis_steps.append({
-                'msg': 'The depth-stencil target was not cleared prior to this draw, so it may contain unexpected '
-                       'contents.',
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='The depth-stencil target was not cleared prior to this draw, so it may contain unexpected '
+                    'contents.'))
 
         # Nothing seems obviously broken, this draw might just be occluded. See if we can get some pixel
         # history results to confirm or guide the user
@@ -876,11 +842,10 @@ class Analysis:
                                               self.targets[-1].typeCast)
 
                 if len(history) == 0 or history[-1].eventId != self.eid or history[-1].Passed():
-                    self.analysis_steps.append({
-                        'msg': 'I tried to run pixel history on the draw to get more information but on {} '
-                               'I didn\'t get valid results!\n\n '
-                               'This is a bug, please report it so it can be investigated.'.format(covered),
-                    })
+                    self.analysis_steps.append(ResultStep(
+                        msg='I tried to run pixel history on the draw to get more information but on {} '
+                            'I didn\'t get valid results!\n\n '
+                            'This is a bug, please report it so it can be investigated.'.format(covered)))
                 else:
                     this_draw = [h for h in history if h.eventId == self.eid]
                     pre_draw_val = this_draw[0].preMod.depth if depth_func is not None else this_draw[0].preMod.stencil
@@ -903,52 +868,48 @@ class Analysis:
                                 last_draw_eid = h.eventId
                                 break
 
-                    history_package = {'x': covered[0], 'y': covered[1], 'id': self.targets[-1].resourceId,
-                                       'tex_display': rd.TextureDisplay(self.tex_display)}
-                    history_package['tex_display'].resourceId = self.targets[-1].resourceId
-                    history_package['tex_display'].subresource = sub
-                    history_package['tex_display'].typeCast = self.targets[-1].typeCast
-                    history_package['history'] = history
+                    history_package = PixelHistoryData()
+                    history_package.x = covered[0]
+                    history_package.y = covered[1]
+                    history_package.id = self.targets[-1].resourceId
+                    history_package.tex_display = rd.TextureDisplay(self.tex_display)
+                    history_package.tex_display.resourceId = self.targets[-1].resourceId
+                    history_package.tex_display.subresource = sub
+                    history_package.tex_display.typeCast = self.targets[-1].typeCast
+                    history_package.history = history
 
                     if last_draw_eid > 0:
-                        self.analysis_steps.append({
-                            'msg': 'Pixel history on {} showed that {} fragments were outputted but their {} '
-                                   'values all failed against the {} before the draw of {:.4}.\n\n '
-                                   'The draw which outputted that depth value is at event {}.'
+                        self.analysis_steps.append(ResultStep(
+                            msg='Pixel history on {} showed that {} fragments were outputted but their {} '
+                                'values all failed against the {} before the draw of {:.4}.\n\n '
+                                'The draw which outputted that depth value is at event {}.'
                             .format(covered, len(this_draw), val_name, val_name, pre_draw_val, last_draw_eid),
-                            'pixel_history': history_package,
-                        })
+                            pixel_history=history_package))
                     else:
-                        self.analysis_steps.append({
-                            'msg': 'Pixel history on {} showed that {} fragments outputted but their {} '
-                                   'values all failed against the {} before the draw of {:.4}.\n\n '
-                                   'No previous draw was detected that wrote that {} value.'
+                        self.analysis_steps.append(ResultStep(
+                            msg='Pixel history on {} showed that {} fragments outputted but their {} '
+                                'values all failed against the {} before the draw of {:.4}.\n\n '
+                                'No previous draw was detected that wrote that {} value.'
                             .format(covered, len(this_draw), val_name, val_name, pre_draw_val, val_name),
-                            'pixel_history': history_package,
-                        })
+                            pixel_history=history_package))
             else:
-                self.analysis_steps.append({
-                    'msg': 'I tried to run pixel history on the draw to get more information but couldn\'t '
-                           'find a pixel covered!\n\n '
-                           'This is a bug, please report it so it can be investigated.',
-                })
+                self.analysis_steps.append(ResultStep(
+                    msg='I tried to run pixel history on the draw to get more information but couldn\'t '
+                        'find a pixel covered!\n\n '
+                        'This is a bug, please report it so it can be investigated.'))
 
         self.tex_display.overlay = rd.DebugOverlay.Depth if depth_func is not None else rd.DebugOverlay.Stencil
 
-        self.analysis_steps.append({
-            'msg': 'This drawcall appears to be failing the {} normally. Check to see what else '
-                   'rendered before it, and whether it should be occluded or if something else is in the '
-                   'way.'.format(test_name),
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='This drawcall appears to be failing the {} normally. Check to see what else '
+                'rendered before it, and whether it should be occluded or if something else is in the '
+                'way.'.format(test_name),
+            tex_display=self.tex_display))
 
     def check_failed_stencil(self):
-        self.analysis_steps.append({
-            'msg': 'The stencil test overlay shows red, so the draw is completely failing a stencil test.',
-            # copy the TextureDisplay object so we can modify it without changing the one in this step
-            'tex_display': rd.TextureDisplay(self.tex_display),
-        })
+        self.analysis_steps.append(ResultStep(
+            msg='The stencil test overlay shows red, so the draw is completely failing a stencil test.',
+            tex_display=self.tex_display))
 
         # Get the cull mode. If culling is enabled we know which stencil state is in use and can narrow our analysis,
         # if culling is disabled then unfortunately we can't automatically narrow down which side is used.
@@ -984,13 +945,12 @@ class Analysis:
             back = front
 
         if not stencil_enabled:
-            self.analysis_steps.append({
-                'msg': 'Depth test stage is disabled! Normally this means the depth test should always '
-                       'pass.\n\n'
-                       'Sorry I couldn\'t figure out the exact problem. Please check your {} '
-                       'setup and report an issue so we can narrow this down in future.',
-                'pipe_stage': qrd.PipelineStage.DepthTest,
-            })
+            self.analysis_steps.append(ResultStep(
+                msg='Depth test stage is disabled! Normally this means the depth test should always '
+                    'pass.\n\n'
+                    'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                    'setup and report an issue so we can narrow this down in future.',
+                pipe_stage=qrd.PipelineStage.DepthTest))
 
             raise AnalysisFinished
 
@@ -1009,24 +969,18 @@ class Analysis:
             checks = check(front), check(back)
 
             if all(checks):
-                self.analysis_steps.append({
-                    'msg': msg.format(test='test', s=front),
-                    'pipe_stage': qrd.PipelineStage.StencilTest,
-                })
+                self.analysis_steps.append(ResultStep(msg=msg.format(test='test', s=front),
+                                                      pipe_stage=qrd.PipelineStage.StencilTest))
 
                 raise AnalysisFinished
             elif checks[0]:
                 msg += ' If your draw relies on back faces then this could be the problem.'
-                self.analysis_steps.append({
-                    'msg': msg.format(test='back face test', s=front),
-                    'pipe_stage': qrd.PipelineStage.StencilTest,
-                })
+                self.analysis_steps.append(ResultStep(msg=msg.format(test='back face test', s=front),
+                                                      pipe_stage=qrd.PipelineStage.StencilTest))
             elif checks[1]:
                 msg += ' If your draw relies on front faces then this could be the problem.'
-                self.analysis_steps.append({
-                    'msg': msg.format(test='front face test', s=back),
-                    'pipe_stage': qrd.PipelineStage.StencilTest,
-                })
+                self.analysis_steps.append(ResultStep(msg=msg.format(test='front face test', s=back),
+                                                      pipe_stage=qrd.PipelineStage.StencilTest))
 
         # Check simple cases that can't ever be true
         check_faces('The stencil {test} is set to Never, meaning it always fails.',
