@@ -76,6 +76,7 @@ class Analysis:
         self.drawcall = self.ctx.GetDrawcall(self.eid)
         self.api_properties = self.r.GetAPIProperties()
         self.textures = self.r.GetTextures()
+        self.buffers = self.r.GetBuffers()
         self.api = self.api_properties.pipelineType
 
         self.pipe = self.r.GetPipelineState()
@@ -590,7 +591,8 @@ class Analysis:
 
     def check_offscreen(self):
         self.analysis_steps.append(ResultStep(
-            msg='The highlight drawcall overlay shows nothing for this draw, meaning it is off-screen.'))
+            msg='The highlight drawcall overlay shows nothing for this draw, meaning it is off-screen or doesn\'t '
+                'cover enough of a pixel.'))
 
         # Check rasterizer discard state
         if (self.glpipe and self.glpipe.vertexProcessing.discard) or (
@@ -601,7 +603,388 @@ class Analysis:
 
             raise AnalysisFinished
 
-        # TODO It's off-screen, we need to debug the transformation pipeline up to rasterizer state
+        vert_ndc_x = list(filter(lambda _: math.isfinite(_), [vert[0] for vert in self.vert_ndc]))
+        vert_ndc_y = list(filter(lambda _: math.isfinite(_), [vert[1] for vert in self.vert_ndc]))
+
+        if len(vert_ndc_x) == 0 or len(vert_ndc_y) == 0:
+            self.analysis_steps.append(ResultStep(
+                msg='The post-transform vertex positions are all NaN or infinity, when converted to normalised device '
+                    'co-ordinates (NDC) by dividing XYZ by W.',
+                mesh_view=self.postvs_stage))
+
+            self.check_invalid_verts()
+
+            raise AnalysisFinished
+
+        v_min = [min(vert_ndc_x), min(vert_ndc_y)]
+        v_max = [max(vert_ndc_x), max(vert_ndc_y)]
+
+        # We can't really easily write a definitive algorithm to determine "reasonable transform, but offscreen" and
+        # "broken transform". As a heuristic we see if the bounds are within a reasonable range of the NDC box
+        # (broken floats are very likely to be outside this range) and that the area of the bounds is at least one pixel
+        # (if the input data is broken/empty the vertices may all be transformed to a point).
+
+        # project the NDC min/max onto the viewport and see how much of a pixel it covers
+        v = self.pipe.GetViewport(0)
+        top_left = ((v_min[0] * 0.5 + 0.5) * v.width, (v_min[1]*0.5 + 0.5) * v.height)
+        bottom_right = ((v_max[0] * 0.5 + 0.5) * v.width, (v_max[1]*0.5 + 0.5) * v.height)
+
+        area = (bottom_right[0] - top_left[0]) * (bottom_right[1] - top_left[1])
+
+        # if the area is below a pixel but we're in the clip region, this might just be a tiny draw or it might be
+        # broken
+        if 0.0 < area < 1.0 and v_min[0] >= -1.0 and v_min[1] >= -1.0 and v_max[0] <= 1.0 and v_max[1] <= 1.0:
+            self.analysis_steps.append(ResultStep(
+                msg='The calculated area covered by this draw is only {} of a pixel, meaning this draw may be too small'
+                    'to render.'.format(area),
+                mesh_view=self.postvs_stage))
+
+            self.check_invalid_verts()
+        else:
+            # if we ARE off screen but we're within 10% of the guard band (which is already *huge*) and
+            # the area is bigger than a pixel then we assume this is a normal draw that's just off screen.
+            if max([abs(_) for _ in v_min + v_max]) < 32767.0 / 10.0 and area > 1.0:
+                self.analysis_steps.append(ResultStep(
+                    msg='The final position outputs from the vertex shading stages looks reasonable but off-screen.\n\n'
+                        'Check that your transformation and vertex shading is working as expected, or perhaps this '
+                        'drawcall should be off-screen.',
+                    mesh_view=self.postvs_stage))
+
+                raise AnalysisFinished
+            # if we're in the outer regions of the guard band or the area is tiny, assume broken and check for invalid
+            # inputs if we can
+            else:
+                self.analysis_steps.append(ResultStep(
+                    msg='The final position outputs seem to be invalid or degenerate, when converted to normalised '
+                        'device co-ordinates (NDC) by dividing XYZ by W.',
+                    mesh_view=self.postvs_stage))
+
+                self.check_invalid_verts()
+
+    def check_invalid_verts(self):
+        vs = self.pipe.GetShader(rd.ShaderStage.Vertex)
+
+        # There should be at least a vertex shader bound
+        if vs == rd.ResourceId.Null():
+            self.analysis_steps.append(ResultStep(
+                msg='No valid vertex shader is bound.',
+                pipe_stage=qrd.PipelineStage.VertexShader))
+
+            raise AnalysisFinished
+
+        # if there's an index buffer bound, we'll bounds check it then calculate the indices
+        if self.drawcall.flags & rd.DrawFlags.Indexed:
+            ib = self.pipe.GetIBuffer()
+            if ib.resourceId == rd.ResourceId.Null():
+                self.analysis_steps.append(ResultStep(
+                    msg='This draw is indexed, but there is no index buffer bound.',
+                    pipe_stage=qrd.PipelineStage.VertexInput))
+
+                raise AnalysisFinished
+
+            ibSize = ib.byteSize
+            ibOffs = ib.byteOffset + self.drawcall.indexOffset * self.drawcall.indexByteWidth
+            # if the binding is unbounded, figure out how much is left in the buffer
+            if ibSize == 0xFFFFFFFFFFFFFFFF:
+                buf = self.get_buf(ib.resourceId)
+                if buf is None or ibOffs > buf.length:
+                    ibSize = 0
+                else:
+                    ibSize = buf.length - ibOffs
+
+            ibNeededSize = self.drawcall.numIndices * self.drawcall.indexByteWidth
+            if ibSize < ibNeededSize:
+                explanation = 'The index buffer is bound with a {} byte range'.format(ib.byteSize)
+                if ib.byteSize == 0xFFFFFFFFFFFFFFFF:
+                    buf = self.get_buf(ib.resourceId)
+                    if buf is None:
+                        buf = rd.BufferDescription()
+                    explanation = ''
+                    explanation += 'The index buffer is {} bytes in size.\n'.format(buf.length)
+                    explanation += 'It is bound with an offset of {}.\n'.format(ib.byteOffset)
+                    explanation += 'The drawcall specifies an offset of {} indices (each index is {} bytes)\n'.format(
+                        self.drawcall.indexOffset, self.drawcall.indexByteWidth)
+                    explanation += 'Meaning only {} bytes are available'.format(ibSize)
+
+                self.analysis_steps.append(ResultStep(
+                    msg='This draw reads {} {}-byte indices from {}, meaning total {} bytes are needed, but '
+                        'only {} bytes are available. This is unlikely to be intentional.\n\n{}'
+                        .format(self.drawcall.numIndices, self.drawcall.indexByteWidth, ib.resourceId, ibNeededSize,
+                                ibSize, explanation),
+                    pipe_stage=qrd.PipelineStage.VertexInput))
+
+            read_bytes = min(ibSize, ibNeededSize)
+
+            # Fetch the data
+            if read_bytes > 0:
+                ibdata = self.r.GetBufferData(ib.resourceId, ibOffs, read_bytes)
+            else:
+                ibdata = bytes()
+
+            # Get the character for the width of index
+            index_fmt = 'B'
+            if self.drawcall.indexByteWidth == 2:
+                index_fmt = 'H'
+            elif self.drawcall.indexByteWidth == 4:
+                index_fmt = 'I'
+
+            avail_indices = int(len(ibdata) / self.drawcall.indexByteWidth)
+
+            # Duplicate the format by the number of indices
+            index_fmt = '=' + str(min(avail_indices, self.drawcall.numIndices)) + index_fmt
+
+            # Unpack all the indices
+            indices = struct.unpack_from(index_fmt, ibdata)
+
+            restart_idx = self.pipe.GetStripRestartIndex() & ((1 << (self.drawcall.indexByteWidth*8)) - 1)
+            restart_enabled = self.pipe.IsStripRestartEnabled() and rd.IsStrip(self.drawcall.topology)
+
+            # Detect restart indices and map them to None, otherwise apply basevertex
+            indices = [None if restart_enabled and i == restart_idx else i + self.drawcall.baseVertex for i in indices]
+        else:
+            indices = [i + self.drawcall.vertexOffset for i in range(self.drawcall.numIndices)]
+
+        # what's the maximum index? for bounds checking
+        max_index = max(indices)
+        max_index_idx = indices.index(max_index)
+        max_inst = max(self.drawcall.numInstances - 1, 0)
+
+        vsinputs = self.pipe.GetVertexInputs()
+        vbuffers = self.pipe.GetVBuffers()
+        avail = [0] * len(vbuffers)
+
+        # Determine the available bytes in each vertex buffer
+        for i, vb in enumerate(vbuffers):
+            vbSize = vb.byteSize
+            vbOffs = vb.byteOffset
+            # if the binding is unbounded, figure out how much is left in the buffer
+            if vbSize == 0xFFFFFFFFFFFFFFFF:
+                buf = self.get_buf(vb.resourceId)
+                if buf is None or vbOffs > buf.length:
+                    vbSize = 0
+                else:
+                    vbSize = buf.length - vbOffs
+            avail[i] = vbSize
+
+        # bounds check each attribute against the maximum available
+        for attr in vsinputs:
+            if not attr.used:
+                continue
+
+            if attr.vertexBuffer >= len(vbuffers) or vbuffers[attr.vertexBuffer].resourceId == rd.ResourceId.Null():
+                self.analysis_steps.append(ResultStep(
+                    msg='Vertex attribute {} references vertex buffer slot {} which has no buffer bound.'
+                        .format(attr.name, attr.vertexBuffer),
+                    pipe_stage=qrd.PipelineStage.VertexInput))
+
+                continue
+
+            vb: rd.BoundVBuffer = vbuffers[attr.vertexBuffer]
+
+            avail_bytes = avail[attr.vertexBuffer]
+            used_bytes = attr.format.ElementSize()
+
+            if attr.perInstance:
+                max_inst_offs = max(self.drawcall.instanceOffset + max_inst, 0)
+
+                if attr.byteOffset + max_inst_offs * vb.byteStride + used_bytes > avail_bytes:
+                    explanation = ''
+                    explanation += 'The vertex buffer {} has {} bytes available'.format(attr.vertexBuffer, avail_bytes)
+
+                    if vb.byteSize == 0xFFFFFFFFFFFFFFFF:
+                        buf = self.get_buf(vb.resourceId)
+                        if buf is None:
+                            buf = rd.BufferDescription()
+                        explanation += ' because it is {} bytes long, ' \
+                                       'and is bound at offset {} bytes'.format(buf.length, vb.byteOffset)
+                    explanation += '.\n'
+
+                    explanation += 'The maximum instance index is {}'.format(max_inst)
+                    if self.drawcall.instanceOffset > 0:
+                        explanation += ' (since the draw renders {} instances starting at {})'.format(
+                            self.drawcall.numInstances, self.drawcall.instanceOffset)
+                    explanation += '.\n'
+
+                    explanation += 'Meaning the highest offset read from is {}.\n'.format(max_inst_offs * vb.byteStride)
+                    explanation += 'The attribute reads {} bytes at offset {} from that.\n'.format(used_bytes,
+                                                                                                   attr.byteOffset)
+
+                    self.analysis_steps.append(ResultStep(
+                        msg='Per-instance vertex attribute {} reads out of bounds on vertex buffer slot {}:\n\n{}'
+                            .format(attr.name, attr.vertexBuffer, explanation),
+                        pipe_stage=qrd.PipelineStage.VertexInput))
+            else:
+                max_idx_offs = max(self.drawcall.baseVertex + max_index, 0)
+
+                if attr.byteOffset + max_idx_offs * vb.byteStride + used_bytes > avail_bytes:
+                    explanation = ''
+                    explanation += 'The vertex buffer {} has {} bytes available'.format(attr.vertexBuffer, avail_bytes)
+
+                    if vb.byteSize == 0xFFFFFFFFFFFFFFFF:
+                        buf = self.get_buf(vb.resourceId)
+                        if buf is None:
+                            buf = rd.BufferDescription()
+                        explanation += ' because it is {} bytes long, ' \
+                                       'and is bound at offset {} bytes'.format(buf.length, vb.byteOffset)
+                    explanation += '.\n'
+
+                    if self.drawcall.flags & rd.DrawFlags.Indexed:
+                        explanation += 'The maximum index is {} (found at vertex {}'.format(max_index,
+                                                                                            max_index_idx)
+                        base = self.drawcall.baseVertex
+                        if base != 0:
+                            explanation += ' by adding base vertex {} to index {}'.format(base, max_index - base)
+                        explanation += ').\n'
+                    else:
+                        explanation += 'The maximum vertex is {}'.format(max_index)
+                        if self.drawcall.vertexOffset > 0:
+                            explanation += ' (since the draw renders {} vertices starting at {})'.format(
+                                self.drawcall.numIndices, self.drawcall.vertexOffset)
+                        explanation += '.\n'
+
+                    explanation += 'Meaning the highest offset read from is {}.\n'.format(max_idx_offs * vb.byteStride)
+                    explanation += 'The attribute reads {} bytes at offset {} from that.\n'.format(used_bytes,
+                                                                                                   attr.byteOffset)
+
+                    self.analysis_steps.append(ResultStep(
+                        msg='Per-vertex vertex attribute {} reads out of bounds on vertex buffer slot {}:\n\n{}'
+                            .format(attr.name, attr.vertexBuffer, explanation),
+                        pipe_stage=qrd.PipelineStage.VertexInput))
+
+        # This is a bit of a desperation move but it might help some people. Look for any matrix parameters that
+        # are obviously broken because they're all 0.0. Don't look inside structs or arrays because they might be
+        # optional/unused
+
+        vsbind = self.pipe.GetBindpointMapping(rd.ShaderStage.Vertex)
+        vsrefl = self.pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+
+        for i in range(len(vsbind.constantBlocks)):
+            if vsbind.constantBlocks[i].arraySize <= 1:
+                cb = self.pipe.GetConstantBuffer(rd.ShaderStage.Vertex, i, 0)
+                cb_vars = self.r.GetCBufferVariableContents(self.pipe.GetGraphicsPipelineObject(), vs,
+                                                            self.pipe.GetShaderEntryPoint(rd.ShaderStage.Vertex), i,
+                                                            cb.resourceId, cb.byteOffset, cb.byteSize)
+
+                for v in cb_vars:
+                    if v.rows > 1 and v.columns > 1:
+                        suspicious = True
+                        value = ''
+
+                        if v.type == rd.VarType.Float:
+                            vi = 0
+                            for r in range(v.rows):
+                                for c in range(v.columns):
+                                    if v.value.f32v[vi] != 0.0:
+                                        suspicious = False
+                                    value += '{:.3}'.format(v.value.f32v[vi])
+                                    vi += 1
+                                    if c < v.columns - 1:
+                                        value += ', '
+                                value += '\n'
+                        elif v.type == rd.VarType.Half:
+                            vi = 0
+                            for r in range(v.rows):
+                                for c in range(v.columns):
+                                    x = rd.HalfToFloat(v.value.u16v[vi])
+                                    if x != 0.0:
+                                        suspicious = False
+                                    value += '{:.3}'.format(x)
+                                    vi += 1
+                                    if c < v.columns - 1:
+                                        value += ', '
+                                value += '\n'
+                        elif v.type == rd.VarType.Double:
+                            vi = 0
+                            for r in range(v.rows):
+                                for c in range(v.columns):
+                                    if v.value.f64v[vi] != 0.0:
+                                        suspicious = False
+                                    value += '{:.3}'.format(v.value.f64v[vi])
+                                    vi += 1
+                                    if c < v.columns - 1:
+                                        value += ', '
+                                value += '\n'
+
+                        if suspicious:
+                            self.analysis_steps.append(ResultStep(
+                                msg='Vertex constant {} in {} is an all-zero matrix which looks suspicious.\n\n{}'
+                                    .format(v.name, vsrefl.constantBlocks[i].name, value),
+                                pipe_stage=qrd.PipelineStage.VertexShader))
+
+        # In general we can't know what the user will be doing with their vertex inputs to generate output, so we can't
+        # say that any input setup is "wrong". However we can certainly try and guess at the problem, so we look for
+        # any and all attributes with 'pos' in the name, and see if they're all zeroes or all identical
+        for attr in vsinputs:
+            if not attr.used:
+                continue
+
+            if 'pos' not in attr.name.lower():
+                continue
+
+            if attr.vertexBuffer >= len(vbuffers):
+                continue
+
+            vb: rd.BoundVBuffer = vbuffers[attr.vertexBuffer]
+
+            if vb.resourceId == rd.ResourceId.Null():
+                continue
+
+            if attr.perInstance:
+                self.analysis_steps.append(ResultStep(
+                    msg='Attribute \'{}\' is set to be per-instance. If this is a vertex '
+                        'position attribute then that might be unintentional.'.format(attr.name),
+                    pipe_stage=qrd.PipelineStage.VertexInput))
+            else:
+                max_idx_offs = max(self.drawcall.baseVertex + max_index - 1, 0)
+                data = self.r.GetBufferData(vb.resourceId,
+                                            vb.byteOffset + attr.byteOffset + max_idx_offs * vb.byteStride, 0)
+
+                elem_size = attr.format.ElementSize()
+                vert_bytes = []
+                offs = 0
+                while offs + elem_size <= len(data):
+                    vert_bytes.append(data[offs:offs+elem_size])
+                    offs += vb.byteStride
+
+                if len(vert_bytes) > 1:
+                    # get the unique set of vertices
+                    unique_vertices = list(set(vert_bytes))
+
+                    # get all usages of the buffer before this event
+                    buf_usage = [u for u in self.r.GetUsage(vb.resourceId) if u.eventId < self.eid]
+
+                    # trim to only write usages
+                    write_usages = [rd.ResourceUsage.VS_RWResource, rd.ResourceUsage.HS_RWResource,
+                                    rd.ResourceUsage.DS_RWResource, rd.ResourceUsage.GS_RWResource,
+                                    rd.ResourceUsage.PS_RWResource, rd.ResourceUsage.CS_RWResource,
+                                    rd.ResourceUsage.All_RWResource,
+                                    rd.ResourceUsage.Copy, rd.ResourceUsage.StreamOut,
+                                    rd.ResourceUsage.CopyDst, rd.ResourceUsage.Discard, rd.ResourceUsage.CPUWrite]
+                    buf_usage = [u for u in buf_usage if u.usage in write_usages]
+
+                    if len(buf_usage) >= 1:
+                        buffer_last_mod = '{} was last modified with {} at event {}, you could check that it wrote ' \
+                                          'what you expected.'.format(vb.resourceId, buf_usage[-1].usage,
+                                                                      buf_usage[-1].eventId)
+                    else:
+                        buffer_last_mod = '{} hasn\'t been modified in this capture, check that you initialised it ' \
+                                          'with the correct data or wrote it before the beginning of the ' \
+                                          'capture.'.format(vb.resourceId)
+
+                    # If all vertices are 0s, give a more specific error message
+                    if not any([any(v) for v in unique_vertices]):
+                        self.analysis_steps.append(ResultStep(
+                            msg='Attribute \'{}\' all members are zero. '
+                                'If this is a vertex position attribute then that might be unintentional.\n\n{}'
+                                .format(attr.name, buffer_last_mod),
+                            mesh_view=rd.MeshDataStage.VSIn))
+                    # otherwise error if we only saw one vertex (maybe it's all 0xcccccccc or something)
+                    elif len(unique_vertices) <= 1:
+                        self.analysis_steps.append(ResultStep(
+                            msg='Attribute \'{}\' all members are identical. '
+                                'If this is a vertex position attribute then that might be unintentional.\n\n{}'
+                                .format(attr.name, buffer_last_mod),
+                            mesh_view=rd.MeshDataStage.VSIn))
 
     def check_failed_backface_culling(self):
         cull_mode = rd.CullMode.NoCull
@@ -1043,6 +1426,12 @@ class Analysis:
         for t in self.textures:
             if t.resourceId == resid:
                 return t
+        return None
+
+    def get_buf(self, resid: rd.ResourceId):
+        for b in self.buffers:
+            if b.resourceId == resid:
+                return b
         return None
 
 
