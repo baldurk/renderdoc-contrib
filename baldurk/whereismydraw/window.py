@@ -187,6 +187,16 @@ class Window(qrd.CaptureViewer):
         self.refresh_result()
 
     def refresh_result(self):
+        if len(self.results) == 0:
+            mqt.SetWidgetVisible(self.resultsText, True)
+            mqt.SetWidgetVisible(self.resultsNavigationBar, False)
+            mqt.SetWidgetVisible(self.texOutWidget, False)
+            mqt.SetWidgetVisible(self.meshOutWidget, False)
+            mqt.SetWidgetVisible(self.resultsSpacer, True)
+
+            mqt.SetWidgetText(self.resultsText, "No results available.")
+            return
+
         step = analyse.ResultStep()
         if self.cur_result in range(len(self.results)):
             step = self.results[self.cur_result]
