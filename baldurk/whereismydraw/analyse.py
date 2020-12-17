@@ -1086,7 +1086,7 @@ class Analysis:
             state_name = 'Depth Clip' if rd.IsD3D(self.api) else 'Depth Clamp'
 
             # If the largest vertex NDC z is lower than the NDC range, the whole draw is near-plane clipped
-            if vert_bounds[1] <= ndc_bounds[0]:
+            if vert_bounds[1] < ndc_bounds[0]:
                 self.analysis_steps.append(ResultStep(
                     msg='All of the drawcall vertices are in front of the near plane, and the '
                         'current {} state means these vertices get clipped.'.format(state_name),
@@ -1095,7 +1095,7 @@ class Analysis:
                 raise AnalysisFinished
 
             # Same for the smallest z being above the NDC range
-            if vert_bounds[0] >= ndc_bounds[1]:
+            if vert_bounds[0] > ndc_bounds[1]:
                 self.analysis_steps.append(ResultStep(
                     msg='All of the drawcall vertices are behind the far plane, and the '
                         'current {} state means these vertices get clipped.'.format(state_name),
