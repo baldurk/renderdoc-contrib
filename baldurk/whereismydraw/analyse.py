@@ -219,9 +219,10 @@ class Analysis:
             self.check_onscreen()
 
         # If we got here, we didn't find a specific problem! Add a note about that
-        self.analysis_steps.append(ResultStep(msg='Sorry, I couldn\'t figure out what was wrong! Please report an '
-                                                  'issue to see if this is something that should be added to my '
-                                                  'checks. You can see what I checked by clicking through the steps.'))
+        self.analysis_steps.append(ResultStep(msg='Sorry, I couldn\'t prove precisely what was wrong! I\'ve noted what '
+                                                  'I did and anything suspicious along the way in the previous steps.\n'
+                                                  'If you think this is something I should have caught with more '
+                                                  'checks please report an issue.'))
 
         raise AnalysisFinished
 
