@@ -188,39 +188,25 @@ class Analysis:
             self.tex_display.rangeMin = min([texmin.floatValue[x] for x in range(4)])
             self.tex_display.rangeMax = max([texmax.floatValue[x] for x in range(4)])
 
-        if self.api == rd.GraphicsAPI.Vulkan:
-            ra = self.vkpipe.currentPass.renderArea
-
-            # if the render area is empty that's certainly not intentional.
-            if ra.width == 0 or ra.height == 0:
-                self.analysis_steps.append(
-                    ResultStep(msg='The render area is {}x{} so nothing will be rendered.'.format(ra.width, ra.height),
-                               pipe_stage=qrd.PipelineStage.ViewportsScissors))
-
-                raise AnalysisFinished
-
-            # Other invalid render areas outside of attachment dimensions would be invalid behaviour that renderdoc
-            # doesn't account for
-
-        v = self.pipe.GetViewport(0)
-
-        if v.width == 0 or v.height == 0:
-            self.analysis_steps.append(
-                ResultStep(msg='The viewport is {}x{} so nothing will be rendered.'.format(v.width, v.height),
-                           pipe_stage=qrd.PipelineStage.ViewportsScissors))
-
-            raise AnalysisFinished
-
         texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Drawcall)
 
         if texmax.floatValue[0] < 0.5:
+            self.analysis_steps.append(ResultStep(
+                msg='The highlight drawcall overlay shows nothing for this draw, meaning it is off-screen or doesn\'t '
+                    'cover enough of a pixel.'))
+
             self.check_offscreen()
         else:
+            self.analysis_steps.append(ResultStep(
+                msg='The highlight drawcall overlay shows the draw, meaning it is rendering but failing some tests.',
+                tex_display=self.tex_display))
+
             self.check_onscreen()
 
         # If we got here, we didn't find a specific problem! Add a note about that
-        self.analysis_steps.append(ResultStep(msg='Sorry, I couldn\'t prove precisely what was wrong! I\'ve noted what '
-                                                  'I did and anything suspicious along the way in the previous steps.\n'
+        self.analysis_steps.append(ResultStep(msg='Sorry, I couldn\'t prove precisely what was wrong! I\'ve noted the '
+                                                  'steps and checks I took below, as well as anything suspicious I '
+                                                  'found along the way.\n\n'
                                                   'If you think this is something I should have caught with more '
                                                   'checks please report an issue.'))
 
@@ -240,10 +226,6 @@ class Analysis:
         return self.r.GetHistogram(overlay, rd.Subresource(), rd.CompType.Typeless, minmax[0], minmax[1], channels)
 
     def check_onscreen(self):
-        self.analysis_steps.append(ResultStep(
-            msg='The highlight drawcall overlay shows the draw, meaning it is rendering but failing some tests.',
-            tex_display=self.tex_display))
-
         # It's on-screen we debug the rasterization/testing/blending states
 
         if self.pipe.GetScissor(0).enabled:
@@ -264,7 +246,11 @@ class Analysis:
                 self.check_failed_scissor()
 
                 # Regardless of whether we finihsed the analysis above, don't do any more checking.
-                raise AnalysisFinished
+                raise
+            else:
+                self.analysis_steps.append(
+                    ResultStep(msg='Some or all of the draw passes the scissor test, which is enabled',
+                               tex_display=self.tex_display))
 
         texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.BackfaceCull)
 
@@ -274,6 +260,10 @@ class Analysis:
 
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='Some or all of the draw passes backface culling',
+                           tex_display=self.tex_display))
 
         texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Depth)
 
@@ -283,6 +273,10 @@ class Analysis:
 
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='Some or all of the draw passes depth testing',
+                           tex_display=self.tex_display))
 
         texmin, texmax = self.get_overlay_minmax(rd.DebugOverlay.Stencil)
 
@@ -292,6 +286,10 @@ class Analysis:
 
             # Regardless of whether we finihsed the analysis above, don't do any more checking.
             raise AnalysisFinished
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='Some or all of the draw passes stencil testing',
+                           tex_display=self.tex_display))
 
         sample_count = self.target_descs[0].msSamp
 
@@ -315,7 +313,15 @@ class Analysis:
         if sample_mask == 0:
             self.analysis_steps.append(ResultStep(
                 msg='The sample mask is set to 0, which will discard all samples.',
-                pipe_stage=qrd.PipelineStage.Rasterizer))
+                pipe_stage=qrd.PipelineStage.SampleMask))
+
+            raise AnalysisFinished
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='The sample mask {:08x} is non-zero or disabled, meaning at least some samples will '
+                               'render. '
+                               .format(sample_mask),
+                           tex_display=self.tex_display))
 
         # On GL, check the sample coverage value for MSAA targets
         if self.api == rd.GraphicsAPI.OpenGL:
@@ -335,6 +341,10 @@ class Analysis:
                         pipe_stage=qrd.PipelineStage.Rasterizer))
 
                     raise AnalysisFinished
+            else:
+                self.analysis_steps.append(
+                    ResultStep(msg='The sample coverage value seems to be set correctly.',
+                               tex_display=self.tex_display))
 
         blends = self.pipe.GetColorBlends()
         targets = self.pipe.GetOutputTargets()
@@ -393,6 +403,10 @@ class Analysis:
                     'written to those targets.\n\n '
                     'This may not be a problem if no color output is expected on those targets.',
                 pipe_stage=qrd.PipelineStage.Blending))
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='The color write masks seem to be set normally.',
+                           pipe_stage=qrd.PipelineStage.Blending))
 
         def is_zero(mul: rd.BlendMultiplier):
             if mul == rd.BlendMultiplier.Zero:
@@ -436,6 +450,14 @@ class Analysis:
                 msg='Some color blending state is strange, but not necessarily unintentional. This is worth '
                     'checking if you haven\'t set this up deliberately:\n\n{}'.format(blend_warnings),
                 pipe_stage=qrd.PipelineStage.Blending))
+        elif any([b is not None and b.enabled for b in color_blends]):
+            self.analysis_steps.append(
+                ResultStep(msg='The blend equations seem to be set up to allow rendering.',
+                           pipe_stage=qrd.PipelineStage.Blending))
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='Blending is disabled.',
+                           pipe_stage=qrd.PipelineStage.Blending))
 
         # Nothing else has indicated a problem. Let's try the clear before draw on black and white backgrounds. If we
         # see any change that will tell us that the draw is working but perhaps outputting the color that's already
@@ -499,6 +521,9 @@ class Analysis:
 
                         raise AnalysisFinished
 
+        self.analysis_steps.append(
+            ResultStep(msg='Using the \'clear before draw\' overlay didn\'t show any output on either black or white.'))
+
         # No obvious failures, if we can run a pixel history let's see if the shader discarded or output something that
         # would
         if self.api_properties.pixelHistory:
@@ -551,7 +576,7 @@ class Analysis:
                         self.analysis_steps.append(ResultStep(
                             msg='Running pixel history on {} it showed that a fragment passed.\n\n '
                                 'Double check if maybe the draw is outputting something but it\'s invisible '
-                                '(e.g. rendering black on black)'.format(covered)))
+                                '(e.g. blending to nothing)'.format(covered)))
                     break
                 else:
                     this_draw = [h for h in history if h.eventId == self.eid]
@@ -566,6 +591,13 @@ class Analysis:
                     msg='Pixel history on {} pixels showed that in {} of them all fragments were discarded.\n\n '
                         'This may not mean every other pixel discarded, but it is worth checking in case your '
                         'shader is always discarding.'.format(attempts, len(discarded_pixels))))
+            else:
+                self.analysis_steps.append(
+                    ResultStep(msg='Pixel history didn\'t detect any pixels discarding.'))
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='Pixel history could narrow down things further but this API doesn\'t support pixel '
+                               'history.'))
 
     def check_failed_scissor(self):
         v = self.pipe.GetViewport(0)
@@ -602,18 +634,56 @@ class Analysis:
         raise AnalysisFinished
 
     def check_offscreen(self):
-        self.analysis_steps.append(ResultStep(
-            msg='The highlight drawcall overlay shows nothing for this draw, meaning it is off-screen or doesn\'t '
-                'cover enough of a pixel.'))
+        v = self.pipe.GetViewport(0)
+
+        if v.width <= 1.0 or v.height <= 1.0:
+            self.analysis_steps.append(
+                ResultStep(msg='Viewport 0 is {}x{} so nothing will be rendered.'.format(v.width, v.height),
+                           pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
+            raise AnalysisFinished
+        elif v.x >= self.target_descs[0].width or v.y >= self.target_descs[0].height:
+            self.analysis_steps.append(
+                ResultStep(msg='Viewport 0 is placed at {},{} which is out of bounds for the target dimension {}x{}.'
+                               .format(v.x, v.y, self.target_descs[0].width, self.target_descs[0].height),
+                           pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
+            raise AnalysisFinished
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='Viewport 0 looks normal, it\'s {}x{} at {},{}.'.format(v.width, v.height, v.x, v.y),
+                           pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
+        if self.api == rd.GraphicsAPI.Vulkan:
+            ra = self.vkpipe.currentPass.renderArea
+
+            # if the render area is empty that's certainly not intentional.
+            if ra.width == 0 or ra.height == 0:
+                self.analysis_steps.append(
+                    ResultStep(msg='The render area is {}x{} so nothing will be rendered.'.format(ra.width, ra.height),
+                               pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
+                raise AnalysisFinished
+
+            # Other invalid render areas outside of attachment dimensions would be invalid behaviour that renderdoc
+            # doesn't account for
+            else:
+                self.analysis_steps.append(ResultStep(
+                    msg='The vulkan render area {}x{} at {},{} is fine.'.format(ra.width, ra.height, ra.x, ra.y),
+                    pipe_stage=qrd.PipelineStage.Rasterizer))
 
         # Check rasterizer discard state
-        if (self.glpipe and self.glpipe.vertexProcessing.discard) or (
-                self.vkpipe and self.vkpipe.rasterizer.rasterizerDiscardEnable):
+        if (self.glpipe is not None and self.glpipe.vertexProcessing.discard) or (
+                self.vkpipe is not None and self.vkpipe.rasterizer.rasterizerDiscardEnable):
             self.analysis_steps.append(ResultStep(
                 msg='Rasterizer discard is enabled. This API state disables rasterization for the drawcall.',
                 pipe_stage=qrd.PipelineStage.Rasterizer))
 
             raise AnalysisFinished
+        elif self.glpipe is not None or self.vkpipe is not None:
+            self.analysis_steps.append(ResultStep(
+                msg='Rasterizer discard is not enabled, so that should be fine.',
+                pipe_stage=qrd.PipelineStage.Rasterizer))
 
         vert_ndc_x = list(filter(lambda _: math.isfinite(_), [vert[0] for vert in self.vert_ndc]))
         vert_ndc_y = list(filter(lambda _: math.isfinite(_), [vert[1] for vert in self.vert_ndc]))
@@ -683,6 +753,8 @@ class Analysis:
                 pipe_stage=qrd.PipelineStage.VertexShader))
 
             raise AnalysisFinished
+
+        prev_len = len(self.analysis_steps)
 
         # if there's an index buffer bound, we'll bounds check it then calculate the indices
         if self.drawcall.flags & rd.DrawFlags.Indexed:
@@ -998,6 +1070,10 @@ class Analysis:
                                 .format(attr.name, buffer_last_mod),
                             mesh_view=rd.MeshDataStage.VSIn))
 
+        if len(self.analysis_steps) == prev_len:
+            self.analysis_steps.append(
+                ResultStep(msg='Didn\'t find any problems with the vertex input setup!'))
+
     def check_failed_backface_culling(self):
         cull_mode = rd.CullMode.NoCull
         if self.api == rd.GraphicsAPI.OpenGL:
@@ -1022,11 +1098,6 @@ class Analysis:
             tex_display=self.tex_display))
 
         v = self.pipe.GetViewport(0)
-        if v.minDepth != 0.0 or v.maxDepth != 1.0:
-            self.analysis_steps.append(ResultStep(
-                msg='The viewport min and max depth are set to {} and {}, which is unusual.'.format(v.minDepth,
-                                                                                                    v.maxDepth),
-                pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
         # Gather API-specific state
         depth_func = rd.CompareFunction.AlwaysTrue
@@ -1082,10 +1153,15 @@ class Analysis:
         vert_ndc_z = list(filter(lambda _: math.isfinite(_), [vert[2] for vert in self.vert_ndc]))
         vert_bounds = [min(vert_ndc_z), max(vert_ndc_z)]
 
+        self.analysis_steps.append(ResultStep(
+            msg='From the vertex output data I calculated the vertices lie within {:.4} and {:.4} in NDC z'
+                .format(vert_bounds[0], vert_bounds[1]),
+            pipe_stage=qrd.PipelineStage.Rasterizer))
+
+        state_name = 'Depth Clip' if rd.IsD3D(self.api) else 'Depth Clamp'
+
         # if depth clipping is enabled (aka depth clamping is disabled)
         if not depth_clamp:
-            state_name = 'Depth Clip' if rd.IsD3D(self.api) else 'Depth Clamp'
-
             # If the largest vertex NDC z is lower than the NDC range, the whole draw is near-plane clipped
             if vert_bounds[1] < ndc_bounds[0]:
                 self.analysis_steps.append(ResultStep(
@@ -1094,6 +1170,10 @@ class Analysis:
                     mesh_view=self.postvs_stage))
 
                 raise AnalysisFinished
+            else:
+                self.analysis_steps.append(ResultStep(
+                    msg='At least some of the vertices are on the right side of the near plane',
+                    mesh_view=self.postvs_stage))
 
             # Same for the smallest z being above the NDC range
             if vert_bounds[0] > ndc_bounds[1]:
@@ -1103,6 +1183,13 @@ class Analysis:
                         mesh_view=self.postvs_stage))
 
                 raise AnalysisFinished
+            else:
+                self.analysis_steps.append(ResultStep(
+                    msg='At least some of the vertices are on the right side of the far plane',
+                    mesh_view=self.postvs_stage))
+        else:
+            self.analysis_steps.append(ResultStep(
+                msg='The current {} state means the near/far planes are ignored for clipping'.format(state_name)))
 
         # Check that the viewport depth range doesn't trivially fail depth bounds
         if depth_bounds and (v.minDepth > depth_bounds[1] or v.maxDepth < depth_bounds[0]):
@@ -1112,6 +1199,11 @@ class Analysis:
                 pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
             raise AnalysisFinished
+        elif depth_bounds:
+            self.analysis_steps.append(ResultStep(
+                msg='The viewport depth range ({} to {}) is within the depth bounds range ({} to {})'
+                    .format(v.minDepth, v.maxDepth, depth_bounds[0], depth_bounds[1]),
+                mesh_view=self.postvs_stage))
 
         # If the vertex NDC z range does not intersect the depth bounds range, and depth bounds test is
         # enabled, the draw fails the depth bounds test
@@ -1122,12 +1214,27 @@ class Analysis:
                 pipe_stage=qrd.PipelineStage.Rasterizer))
 
             raise AnalysisFinished
+        elif depth_bounds:
+            self.analysis_steps.append(ResultStep(
+                msg='Some vertices are within the depth bounds range ({} to {})'
+                    .format(v.minDepth, v.maxDepth, depth_bounds[0], depth_bounds[1]),
+                mesh_view=self.postvs_stage))
 
         # Equal depth testing is often used but not equal is rare - flag it too
         if depth_func == rd.CompareFunction.NotEqual:
             self.analysis_steps.append(ResultStep(
                 msg='The depth function of {} is not a problem but is unusual.'.format(depth_func),
                 pipe_stage=qrd.PipelineStage.DepthTest))
+
+        if v.minDepth != 0.0 or v.maxDepth != 1.0:
+            self.analysis_steps.append(ResultStep(
+                msg='The viewport min and max depth are set to {} and {}, which is unusual.'.format(v.minDepth,
+                                                                                                    v.maxDepth),
+                pipe_stage=qrd.PipelineStage.ViewportsScissors))
+        else:
+            self.analysis_steps.append(
+                ResultStep(msg='The viewport depth bounds are {} to {} which is normal.'.format(v.minDepth, v.maxDepth),
+                           pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
         self.check_previous_depth_stencil(depth_func)
 
@@ -1248,6 +1355,10 @@ class Analysis:
                         .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0],
                                 str(depth_func).split('.')[-1]),
                         pipe_stage=qrd.PipelineStage.DepthTest))
+                else:
+                    self.analysis_steps.append(ResultStep(
+                        msg='The last depth clear of {} at EID {} cleared depth to {}, which is reasonable.'
+                            .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0])))
 
         # If there's no depth/stencil clear found at all, that's a red flag
         else:

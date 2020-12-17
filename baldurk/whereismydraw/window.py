@@ -64,7 +64,8 @@ class Window(qrd.CaptureViewer):
 
         vert = mqt.CreateVerticalContainer()
         mqt.AddWidget(self.results, vert)
-        self.resultsText = mqt.CreateLabel()
+        self.summaryText = mqt.CreateLabel()
+        self.stepText = mqt.CreateLabel()
         self.texOutWidget = mqt.CreateOutputRenderingWidget()
         self.meshOutWidget = mqt.CreateOutputRenderingWidget()
         self.resultsSpacer = mqt.CreateSpacer(False)
@@ -80,8 +81,9 @@ class Window(qrd.CaptureViewer):
         mqt.AddWidget(self.resultsNavigationBar, self.resultsNext)
         mqt.AddWidget(self.resultsNavigationBar, self.showDetails)
         mqt.AddWidget(self.resultsNavigationBar, self.navSpacer)
+        mqt.AddWidget(vert, self.summaryText)
         mqt.AddWidget(vert, self.resultsNavigationBar)
-        mqt.AddWidget(vert, self.resultsText)
+        mqt.AddWidget(vert, self.stepText)
         mqt.AddWidget(vert, self.texOutWidget)
         mqt.AddWidget(vert, self.meshOutWidget)
         mqt.AddWidget(vert, self.resultsSpacer)
@@ -126,13 +128,15 @@ class Window(qrd.CaptureViewer):
         mqt.SetWidgetText(self.analyseButton, "Analyse draw")
         mqt.SetWidgetEnabled(self.analyseButton, False)
 
-        mqt.SetWidgetVisible(self.resultsText, True)
+        mqt.SetWidgetVisible(self.summaryText, True)
+        mqt.SetWidgetVisible(self.stepText, False)
         mqt.SetWidgetVisible(self.resultsNavigationBar, False)
         mqt.SetWidgetVisible(self.texOutWidget, False)
         mqt.SetWidgetVisible(self.meshOutWidget, False)
         mqt.SetWidgetVisible(self.resultsSpacer, True)
 
-        mqt.SetWidgetText(self.resultsText, "No results available.")
+        mqt.SetWidgetText(self.summaryText, "No analysis available.")
+        mqt.SetWidgetText(self.stepText, "")
 
         self.cur_result = 0
         self.results = []
@@ -157,7 +161,10 @@ class Window(qrd.CaptureViewer):
         print("Analysing {}".format(self.eid))
         mqt.SetWidgetEnabled(self.analyseButton, False)
 
-        mqt.SetWidgetText(self.resultsText, "Analysis in progress, please wait!")
+        mqt.SetWidgetText(self.summaryText, "Analysis in progress, please wait!")
+        mqt.SetWidgetText(self.stepText, "")
+        mqt.SetWidgetVisible(self.summaryText, True)
+        mqt.SetWidgetVisible(self.stepText, False)
         mqt.SetWidgetVisible(self.resultsNavigationBar, False)
         mqt.SetWidgetVisible(self.texOutWidget, False)
         mqt.SetWidgetVisible(self.meshOutWidget, False)
@@ -169,10 +176,19 @@ class Window(qrd.CaptureViewer):
         print("Analysis finished")
         mqt.SetWidgetEnabled(self.analyseButton, True)
 
+        mqt.SetWidgetVisible(self.stepText, True)
         mqt.SetWidgetVisible(self.resultsNavigationBar, True)
 
         self.results = results
         self.cur_result = 0
+
+        draw: rd.DrawcallDescription = self.ctx.GetDrawcall(self.eid)
+
+        if len(self.results) == 0:
+            mqt.SetWidgetText(self.summaryText, "Analysis failed for {}: {}!".format(self.eid, draw.name))
+        else:
+            mqt.SetWidgetText(self.summaryText, "Conclusion of analysis for {}: {}:\n\n{}"
+                                                .format(self.eid, draw.name, self.format_step_text(-1)))
 
         self.refresh_result()
 
@@ -188,13 +204,14 @@ class Window(qrd.CaptureViewer):
 
     def refresh_result(self):
         if len(self.results) == 0:
-            mqt.SetWidgetVisible(self.resultsText, True)
+            mqt.SetWidgetText(self.summaryText, "No results available.")
+            mqt.SetWidgetText(self.stepText, "")
+            mqt.SetWidgetVisible(self.summaryText, True)
+            mqt.SetWidgetVisible(self.stepText, False)
             mqt.SetWidgetVisible(self.resultsNavigationBar, False)
             mqt.SetWidgetVisible(self.texOutWidget, False)
             mqt.SetWidgetVisible(self.meshOutWidget, False)
             mqt.SetWidgetVisible(self.resultsSpacer, True)
-
-            mqt.SetWidgetText(self.resultsText, "No results available.")
             return
 
         step = analyse.ResultStep()
@@ -206,22 +223,16 @@ class Window(qrd.CaptureViewer):
 
         mqt.SetWidgetEnabled(self.showDetails, step.has_details())
 
-        draw: rd.DrawcallDescription = self.ctx.GetDrawcall(self.eid)
+        text = self.format_step_text(self.cur_result)
 
-        if draw:
-            text = "Results for draw {}: {}. Analysis step {} of {}".format(self.eid, draw.name, self.cur_result + 1,
-                                                                            len(self.results))
-            text += '\n\n'
-            text += step.msg
-        else:
-            text = ''
+        if self.ctx.GetDrawcall(self.eid):
+            text = "Analysis step {} of {}:\n\n{}".format(self.cur_result + 1, len(self.results), text)
 
         mqt.SetWidgetVisible(self.texOutWidget, False)
         mqt.SetWidgetVisible(self.meshOutWidget, False)
         mqt.SetWidgetVisible(self.resultsSpacer, True)
 
         display = False
-
         if step.tex_display.resourceId != rd.ResourceId.Null():
             display = True
 
@@ -239,8 +250,15 @@ class Window(qrd.CaptureViewer):
             selected_draw = self.ctx.GetDrawcall(selected_eid)
 
             text += '\n\n'
-            text += 'Can\'t display visualisation for this step while another event {}: {} is selected'\
+            text += 'Can\'t display visualisation for this step while another event {}: {} is selected' \
                 .format(selected_eid, selected_draw.name)
+
+        mqt.SetWidgetText(self.stepText, text)
+
+    def format_step_text(self, step_index: int):
+        step = self.results[step_index]
+
+        text = step.msg
 
         if step.pixel_history.id != rd.ResourceId():
             text += '\n\n'
@@ -294,7 +312,7 @@ class Window(qrd.CaptureViewer):
                     text += '    The fragment failed the stencil test.\n'
                 text += '    After: {}'.format(format_mod(h.postMod))
 
-        mqt.SetWidgetText(self.resultsText, text)
+        return text
 
     def goto_details(self):
         step: analyse.ResultStep = self.results[self.cur_result]
