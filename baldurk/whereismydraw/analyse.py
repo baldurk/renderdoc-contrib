@@ -498,7 +498,8 @@ class Analysis:
 
                         raise AnalysisFinished
 
-        # No obvious failures, if we can run a pixel history let's see if the shader discarded
+        # No obvious failures, if we can run a pixel history let's see if the shader discarded or output something that
+        # would
         if self.api_properties.pixelHistory:
             self.tex_display.overlay = rd.DebugOverlay.Drawcall
             self.out.SetTextureDisplay(self.tex_display)
@@ -536,10 +537,20 @@ class Analysis:
                 if len(history) == 0 or history[-1].eventId != self.eid:
                     continue
                 elif history[-1].Passed():
-                    self.analysis_steps.append(ResultStep(
-                        msg='Running pixel history on {} it showed that a fragment passed.\n\n '
-                            'Double check if maybe the draw is outputting something but it\'s invisible '
-                            '(e.g. rendering black on black)'.format(covered)))
+                    alpha = history[-1].shaderOut.col.floatValue[3]
+                    blend = color_blends[0]
+                    if blend is None:
+                        blend = rd.ColorBlend()
+                        blend.enabled = False
+                    if alpha <= 0.0 and blend.enabled and blend.colorBlend.source == rd.BlendMultiplier.SrcAlpha:
+                        self.analysis_steps.append(ResultStep(
+                            msg='Running pixel history on {} it showed that a fragment outputted alpha of 0.0.\n\n '
+                                'Your blend setup is such that this means the shader output is multiplied by 0'))
+                    else:
+                        self.analysis_steps.append(ResultStep(
+                            msg='Running pixel history on {} it showed that a fragment passed.\n\n '
+                                'Double check if maybe the draw is outputting something but it\'s invisible '
+                                '(e.g. rendering black on black)'.format(covered)))
                     break
                 else:
                     this_draw = [h for h in history if h.eventId == self.eid]
