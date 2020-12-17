@@ -1020,6 +1020,13 @@ class Analysis:
             msg='The depth test overlay shows red, so the draw is completely failing a depth test.',
             tex_display=self.tex_display))
 
+        v = self.pipe.GetViewport(0)
+        if v.minDepth != 0.0 or v.maxDepth != 1.0:
+            self.analysis_steps.append(ResultStep(
+                msg='The viewport min and max depth are set to {} and {}, which is unusual.'.format(v.minDepth,
+                                                                                                    v.maxDepth),
+                pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
         # Gather API-specific state
         depth_func = rd.CompareFunction.AlwaysTrue
         ndc_bounds = [0.0, 1.0]
@@ -1095,6 +1102,15 @@ class Analysis:
                         mesh_view=self.postvs_stage))
 
                 raise AnalysisFinished
+
+        # Check that the viewport depth range doesn't trivially fail depth bounds
+        if depth_bounds and (v.minDepth > depth_bounds[1] or v.maxDepth < depth_bounds[0]):
+            self.analysis_steps.append(ResultStep(
+                msg='The viewport depth range ({} to {}) are outside the depth bounds range ({} to {}), '
+                    'which is enabled'.format(v.minDepth, v.maxDepth, depth_bounds[0], depth_bounds[1]),
+                pipe_stage=qrd.PipelineStage.ViewportsScissors))
+
+            raise AnalysisFinished
 
         # If the vertex NDC z range does not intersect the depth bounds range, and depth bounds test is
         # enabled, the draw fails the depth bounds test
@@ -1197,7 +1213,26 @@ class Analysis:
                             'function is {} which is impossible to pass.'.format(str(self.depth.resourceId),
                                                                                  clear_eid,
                                                                                  clear_color.floatValue[0],
-                                                                                 depth_func),
+                                                                                 str(depth_func).split('.')[-1]),
+                        pipe_stage=qrd.PipelineStage.DepthTest))
+
+                    raise AnalysisFinished
+
+                v = self.pipe.GetViewport(0)
+
+                if clear_eid > 0 and ((clear_color.floatValue[0] >= max(v.minDepth, v.maxDepth) and
+                                       depth_func == rd.CompareFunction.Greater) or
+                                      (clear_color.floatValue[0] <= min(v.minDepth, v.maxDepth) and
+                                       depth_func == rd.CompareFunction.Less) or
+                                      (clear_color.floatValue[0] > min(v.minDepth, v.maxDepth) and
+                                       depth_func == rd.CompareFunction.GreaterEqual) or
+                                      (clear_color.floatValue[0] < min(v.minDepth, v.maxDepth) and
+                                       depth_func == rd.CompareFunction.LessEqual)):
+                    self.analysis_steps.append(ResultStep(
+                        msg='The last depth clear of {} at @{} cleared depth to {:.4}, but the viewport '
+                            'min/max bounds ({:.4} to {:.4}) mean this draw can\'t compare {}.'
+                            .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], v.minDepth,
+                                    v.maxDepth, str(depth_func).split('.')[-1]),
                         pipe_stage=qrd.PipelineStage.DepthTest))
 
                     raise AnalysisFinished
@@ -1209,7 +1244,8 @@ class Analysis:
                     self.analysis_steps.append(ResultStep(
                         msg='The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
                             'function is {} which is highly unlikely to pass. This is worth checking'
-                        .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], depth_func),
+                        .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0],
+                                str(depth_func).split('.')[-1]),
                         pipe_stage=qrd.PipelineStage.DepthTest))
 
         # If there's no depth/stencil clear found at all, that's a red flag
