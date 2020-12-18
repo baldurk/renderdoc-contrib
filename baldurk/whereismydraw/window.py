@@ -285,7 +285,7 @@ class Window(qrd.CaptureViewer):
                     d = rd.DrawcallDescription()
 
                 if prev_eid != h.eventId:
-                    text += "* {}: {}\n".format(h.eventId, d.name)
+                    text += "* @{}: {}\n".format(h.eventId, d.name)
                     prev_eid = h.eventId
 
                 prim = 'Unknown primitive'

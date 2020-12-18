@@ -69,7 +69,7 @@ class Analysis:
         self.eid = eid
         self.r = r
 
-        print("On replay thread, analysing eid {} with current event {}".format(self.eid, self.ctx.CurEvent()))
+        print("On replay thread, analysing @{} with current @{}".format(self.eid, self.ctx.CurEvent()))
 
         self.r.SetFrameEvent(self.eid, True)
 
@@ -1047,7 +1047,7 @@ class Analysis:
                     buf_usage = [u for u in buf_usage if u.usage in write_usages]
 
                     if len(buf_usage) >= 1:
-                        buffer_last_mod = '{} was last modified with {} at event {}, you could check that it wrote ' \
+                        buffer_last_mod = '{} was last modified with {} at @{}, you could check that it wrote ' \
                                           'what you expected.'.format(vb.resourceId, buf_usage[-1].usage,
                                                                       buf_usage[-1].eventId)
                     else:
@@ -1317,7 +1317,7 @@ class Analysis:
                         clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.Greater) or (
                         clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
                     self.analysis_steps.append(ResultStep(
-                        msg='The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                        msg='The last depth clear of {} at @{} cleared depth to {:.4}, but the depth comparison '
                             'function is {} which is impossible to pass.'.format(str(self.depth.resourceId),
                                                                                  clear_eid,
                                                                                  clear_color.floatValue[0],
@@ -1350,14 +1350,14 @@ class Analysis:
                         clear_color.floatValue[0] == 1.0 and depth_func == rd.CompareFunction.GreaterEqual) or (
                         clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.LessEqual):
                     self.analysis_steps.append(ResultStep(
-                        msg='The last depth clear of {} at EID {} cleared depth to {:.4}, but the depth comparison '
+                        msg='The last depth clear of {} at EID {} cleared depth to {}, but the depth comparison '
                             'function is {} which is highly unlikely to pass. This is worth checking'
                         .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0],
                                 str(depth_func).split('.')[-1]),
                         pipe_stage=qrd.PipelineStage.DepthTest))
                 else:
                     self.analysis_steps.append(ResultStep(
-                        msg='The last depth clear of {} at EID {} cleared depth to {}, which is reasonable.'
+                        msg='The last depth clear of {} at @{} cleared depth to {}, which is reasonable.'
                             .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0])))
 
         # If there's no depth/stencil clear found at all, that's a red flag
@@ -1435,7 +1435,7 @@ class Analysis:
                         self.analysis_steps.append(ResultStep(
                             msg='Pixel history on {} showed that {} fragments were outputted but their {} '
                                 'values all failed against the {} before the draw of {:.4}.\n\n '
-                                'The draw which outputted that depth value is at event {}.'
+                                'The draw which outputted that depth value is at @{}.'
                             .format(covered, len(this_draw), val_name, val_name, pre_draw_val, last_draw_eid),
                             pixel_history=history_package))
                     else:
