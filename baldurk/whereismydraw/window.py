@@ -24,6 +24,7 @@
 
 import qrenderdoc as qrd
 import renderdoc as rd
+from typing import Optional
 from . import analyse
 
 mqt: qrd.MiniQtHelper
@@ -355,11 +356,13 @@ class Window(qrd.CaptureViewer):
             return
 
 
-cur_window = None
+cur_window: Optional[Window] = None
 
 
 def closed():
     global cur_window
+    if cur_window is not None:
+        cur_window.ctx.RemoveCaptureViewer(cur_window)
     cur_window = None
 
 
