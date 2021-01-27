@@ -13,6 +13,8 @@ To install, you can download or clone this project under your `qrenderdoc` setti
 
 RenderDoc will populate all compatible extensions on next startup, and you can manage these from `Tools` &rarr; `Manage Extensions`. Extensions can be loaded for a single session by clicking 'load', and loaded for all sessions by then selecting 'always load'.
 
+For more information on setting up extensions consult the [RenderDoc documentation](https://renderdoc.org/docs/how/how_python_extension.html). For writing extensions there is [specific documentation](https://renderdoc.org/docs/python_api/ui_extensions.html).
+
 To use a custom shader you can either configure a new path in the settings window under `Texture Viewer` and `Custom shader directories`, or else copy the file you want to use into your `qrenderdoc` settings folder as above (the parent folder of the `extensions` subdirectory).
 
 # Contributing
