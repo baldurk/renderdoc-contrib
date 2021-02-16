@@ -770,9 +770,9 @@ class Analysis:
         # if there's an index buffer bound, we'll bounds check it then calculate the indices
         if self.drawcall.flags & rd.DrawFlags.Indexed:
             ib = self.pipe.GetIBuffer()
-            if ib.resourceId == rd.ResourceId.Null():
+            if ib.resourceId == rd.ResourceId.Null() or self.drawcall.indexByteWidth == 0:
                 self.analysis_steps.append(ResultStep(
-                    msg='This draw is indexed, but there is no index buffer bound.',
+                    msg='This draw is indexed, but there is no valid index buffer bound.',
                     pipe_stage=qrd.PipelineStage.VertexInput))
 
                 raise AnalysisFinished
