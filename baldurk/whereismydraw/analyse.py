@@ -1172,7 +1172,7 @@ class Analysis:
                 raise AnalysisFinished
             else:
                 self.analysis_steps.append(ResultStep(
-                    msg='At least some of the vertices are on the right side of the near plane',
+                    msg='At least some of the vertices are on the passing side of the near plane',
                     mesh_view=self.postvs_stage))
 
             # Same for the smallest z being above the NDC range
@@ -1185,7 +1185,7 @@ class Analysis:
                 raise AnalysisFinished
             else:
                 self.analysis_steps.append(ResultStep(
-                    msg='At least some of the vertices are on the right side of the far plane',
+                    msg='At least some of the vertices are on the passing side of the far plane',
                     mesh_view=self.postvs_stage))
         else:
             self.analysis_steps.append(ResultStep(
