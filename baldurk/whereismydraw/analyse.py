@@ -123,7 +123,7 @@ class Analysis:
                     if vert * postvs.vertexByteStride + 16 < len(pos_data):
                         self.postvs_positions.append(struct.unpack_from("4f", pos_data, vert * postvs.vertexByteStride))
 
-        self.vert_ndc = [(vert[0] / vert[3], vert[1] / vert[3], vert[2] / vert[3]) for vert in self.postvs_positions]
+        self.vert_ndc = [(vert[0] / vert[3], vert[1] / vert[3], vert[2] / vert[3]) for vert in self.postvs_positions if vert[3] != 0.0]
 
         # Create a temporary offscreen output we'll use for
         self.out = self.r.CreateOutput(rd.CreateHeadlessWindowingData(dim[0], dim[1]), rd.ReplayOutputType.Texture)
@@ -684,6 +684,17 @@ class Analysis:
             self.analysis_steps.append(ResultStep(
                 msg='Rasterizer discard is not enabled, so that should be fine.',
                 pipe_stage=qrd.PipelineStage.Rasterizer))
+
+        if len(self.vert_ndc) == 0 and len(self.postvs_positions) != 0:
+            self.analysis_steps.append(ResultStep(
+                msg='All of the post-transform vertex positions have W=0.0 which is invalid, you should check your '
+                    'vertex tranformation setup.',
+                mesh_view=self.postvs_stage))
+        elif len(self.vert_ndc) < len(self.postvs_positions):
+            self.analysis_steps.append(ResultStep(
+                msg='Some of the post-transform vertex positions have W=0.0 which is invalid, you should check your '
+                    'vertex tranformation setup.',
+                mesh_view=self.postvs_stage))
 
         vert_ndc_x = list(filter(lambda _: math.isfinite(_), [vert[0] for vert in self.vert_ndc]))
         vert_ndc_y = list(filter(lambda _: math.isfinite(_), [vert[1] for vert in self.vert_ndc]))
