@@ -73,7 +73,7 @@ class Analysis:
 
         self.r.SetFrameEvent(self.eid, True)
 
-        self.drawcall = self.ctx.GetDrawcall(self.eid)
+        self.drawcall = self.ctx.GetAction(self.eid)
         self.api_properties = self.r.GetAPIProperties()
         self.textures = self.r.GetTextures()
         self.buffers = self.r.GetBuffers()
@@ -130,6 +130,8 @@ class Analysis:
 
         self.tex_display = rd.TextureDisplay()
 
+        name = self.drawcall.GetName(self.ctx.GetStructuredFile())
+
         # We're not actually trying to catch exceptions here, we just want a finally: to shutdown the output
         try:
             self.analysis_steps = []
@@ -142,16 +144,16 @@ class Analysis:
                 raise AnalysisFinished
 
             # if the drawcall has a parameter which means no work happens, alert the user
-            if (self.drawcall.flags & rd.DrawFlags.Instanced) and self.drawcall.numInstances == 0:
+            if (self.drawcall.flags & rd.ActionFlags.Instanced) and self.drawcall.numInstances == 0:
                 self.analysis_steps.append(ResultStep(msg='The drawcall {} is instanced, but the number of instances '
-                                                          'specified is 0.'.format(self.drawcall.name)))
+                                                          'specified is 0.'.format(name)))
 
                 raise AnalysisFinished
 
             if self.drawcall.numIndices == 0:
-                vert_name = 'indices' if self.drawcall.flags & rd.DrawFlags.Indexed else 'vertices'
+                vert_name = 'indices' if self.drawcall.flags & rd.ActionFlags.Indexed else 'vertices'
                 self.analysis_steps.append(
-                    ResultStep(msg='The drawcall {} specifies 0 {}.'.format(self.drawcall.name, vert_name)))
+                    ResultStep(msg='The drawcall {} specifies 0 {}.'.format(name, vert_name)))
 
                 raise AnalysisFinished
 
@@ -768,7 +770,7 @@ class Analysis:
         prev_len = len(self.analysis_steps)
 
         # if there's an index buffer bound, we'll bounds check it then calculate the indices
-        if self.drawcall.flags & rd.DrawFlags.Indexed:
+        if self.drawcall.flags & rd.ActionFlags.Indexed:
             ib = self.pipe.GetIBuffer()
             if ib.resourceId == rd.ResourceId.Null() or ib.byteStride == 0:
                 self.analysis_steps.append(ResultStep(
@@ -923,7 +925,7 @@ class Analysis:
                                        'and is bound at offset {} bytes'.format(buf.length, vb.byteOffset)
                     explanation += '.\n'
 
-                    if self.drawcall.flags & rd.DrawFlags.Indexed:
+                    if self.drawcall.flags & rd.ActionFlags.Indexed:
                         explanation += 'The maximum index is {} (found at vertex {}'.format(max_index,
                                                                                             max_index_idx)
                         base = self.drawcall.baseVertex

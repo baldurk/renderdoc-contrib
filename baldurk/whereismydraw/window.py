@@ -146,16 +146,19 @@ class Window(qrd.CaptureViewer):
         pass
 
     def OnEventChanged(self, event):
-        draw: rd.DrawcallDescription = self.ctx.GetDrawcall(event)
+        draw = self.ctx.GetAction(event)
 
-        if draw is not None and (draw.flags & rd.DrawFlags.Drawcall):
-            mqt.SetWidgetText(self.analyseButton, "Analyse draw {}: {}".format(draw.eventId, draw.name))
+        if draw is not None and (draw.flags & rd.ActionFlags.Drawcall):
+            mqt.SetWidgetText(self.analyseButton, "Analyse draw {}: {}".format(draw.eventId, self.get_action_name(draw)))
             mqt.SetWidgetEnabled(self.analyseButton, True)
         else:
             mqt.SetWidgetText(self.analyseButton, "Can't analyse {}, select a draw".format(event))
             mqt.SetWidgetEnabled(self.analyseButton, False)
 
         self.refresh_result()
+
+    def get_action_name(self, draw: rd.ActionDescription):
+        return draw.GetName(self.ctx.GetStructuredFile())
 
     def start_analysis(self):
         self.eid = self.ctx.CurEvent()
@@ -183,13 +186,14 @@ class Window(qrd.CaptureViewer):
         self.results = results
         self.cur_result = 0
 
-        draw: rd.DrawcallDescription = self.ctx.GetDrawcall(self.eid)
+        draw = self.ctx.GetAction(self.eid)
 
         if len(self.results) == 0:
-            mqt.SetWidgetText(self.summaryText, "Analysis failed for {}: {}!".format(self.eid, draw.name))
+            mqt.SetWidgetText(self.summaryText,
+                              "Analysis failed for {}: {}!".format(self.eid, self.get_action_name(draw)))
         else:
             mqt.SetWidgetText(self.summaryText, "Conclusion of analysis for {}: {}:\n\n{}"
-                                                .format(self.eid, draw.name, self.format_step_text(-1)))
+                              .format(self.eid, self.get_action_name(draw), self.format_step_text(-1)))
 
         self.refresh_result()
 
@@ -226,7 +230,7 @@ class Window(qrd.CaptureViewer):
 
         text = self.format_step_text(self.cur_result)
 
-        if self.ctx.GetDrawcall(self.eid):
+        if self.ctx.GetAction(self.eid):
             text = "Analysis step {} of {}:\n\n{}".format(self.cur_result + 1, len(self.results), text)
 
         mqt.SetWidgetVisible(self.texOutWidget, False)
@@ -248,11 +252,11 @@ class Window(qrd.CaptureViewer):
             mqt.SetWidgetVisible(self.resultsSpacer, True)
 
             selected_eid = self.ctx.CurEvent()
-            selected_draw = self.ctx.GetDrawcall(selected_eid)
+            selected_draw = self.ctx.GetAction(selected_eid)
 
             text += '\n\n'
             text += 'Can\'t display visualisation for this step while another event {}: {} is selected' \
-                .format(selected_eid, selected_draw.name)
+                .format(selected_eid, self.get_action_name(selected_draw))
 
         mqt.SetWidgetText(self.stepText, text)
 
@@ -280,13 +284,15 @@ class Window(qrd.CaptureViewer):
             prev_eid = 0
 
             for h in history:
-                d = self.ctx.GetDrawcall(h.eventId)
+                d = self.ctx.GetAction(h.eventId)
 
                 if d is None:
-                    d = rd.DrawcallDescription()
+                    name = '???'
+                else:
+                    name = self.get_action_name(d)
 
                 if prev_eid != h.eventId:
-                    text += "* @{}: {}\n".format(h.eventId, d.name)
+                    text += "* @{}: {}\n".format(h.eventId, name)
                     prev_eid = h.eventId
 
                 prim = 'Unknown primitive'
