@@ -770,7 +770,7 @@ class Analysis:
         # if there's an index buffer bound, we'll bounds check it then calculate the indices
         if self.drawcall.flags & rd.DrawFlags.Indexed:
             ib = self.pipe.GetIBuffer()
-            if ib.resourceId == rd.ResourceId.Null() or self.drawcall.indexByteWidth == 0:
+            if ib.resourceId == rd.ResourceId.Null() or ib.byteStride == 0:
                 self.analysis_steps.append(ResultStep(
                     msg='This draw is indexed, but there is no valid index buffer bound.',
                     pipe_stage=qrd.PipelineStage.VertexInput))
@@ -778,7 +778,7 @@ class Analysis:
                 raise AnalysisFinished
 
             ibSize = ib.byteSize
-            ibOffs = ib.byteOffset + self.drawcall.indexOffset * self.drawcall.indexByteWidth
+            ibOffs = ib.byteOffset + self.drawcall.indexOffset * ib.byteStride
             # if the binding is unbounded, figure out how much is left in the buffer
             if ibSize == 0xFFFFFFFFFFFFFFFF:
                 buf = self.get_buf(ib.resourceId)
@@ -787,7 +787,7 @@ class Analysis:
                 else:
                     ibSize = buf.length - ibOffs
 
-            ibNeededSize = self.drawcall.numIndices * self.drawcall.indexByteWidth
+            ibNeededSize = self.drawcall.numIndices * ib.byteStride
             if ibSize < ibNeededSize:
                 explanation = 'The index buffer is bound with a {} byte range'.format(ib.byteSize)
                 if ib.byteSize == 0xFFFFFFFFFFFFFFFF:
@@ -798,13 +798,13 @@ class Analysis:
                     explanation += 'The index buffer is {} bytes in size.\n'.format(buf.length)
                     explanation += 'It is bound with an offset of {}.\n'.format(ib.byteOffset)
                     explanation += 'The drawcall specifies an offset of {} indices (each index is {} bytes)\n'.format(
-                        self.drawcall.indexOffset, self.drawcall.indexByteWidth)
+                        self.drawcall.indexOffset, ib.byteStride)
                     explanation += 'Meaning only {} bytes are available'.format(ibSize)
 
                 self.analysis_steps.append(ResultStep(
                     msg='This draw reads {} {}-byte indices from {}, meaning total {} bytes are needed, but '
                         'only {} bytes are available. This is unlikely to be intentional.\n\n{}'
-                        .format(self.drawcall.numIndices, self.drawcall.indexByteWidth, ib.resourceId, ibNeededSize,
+                        .format(self.drawcall.numIndices, ib.byteStride, ib.resourceId, ibNeededSize,
                                 ibSize, explanation),
                     pipe_stage=qrd.PipelineStage.VertexInput))
 
@@ -818,12 +818,12 @@ class Analysis:
 
             # Get the character for the width of index
             index_fmt = 'B'
-            if self.drawcall.indexByteWidth == 2:
+            if ib.byteStride == 2:
                 index_fmt = 'H'
-            elif self.drawcall.indexByteWidth == 4:
+            elif ib.byteStride == 4:
                 index_fmt = 'I'
 
-            avail_indices = int(len(ibdata) / self.drawcall.indexByteWidth)
+            avail_indices = int(len(ibdata) / ib.byteStride)
 
             # Duplicate the format by the number of indices
             index_fmt = '=' + str(min(avail_indices, self.drawcall.numIndices)) + index_fmt
@@ -831,8 +831,8 @@ class Analysis:
             # Unpack all the indices
             indices = struct.unpack_from(index_fmt, ibdata)
 
-            restart_idx = self.pipe.GetStripRestartIndex() & ((1 << (self.drawcall.indexByteWidth*8)) - 1)
-            restart_enabled = self.pipe.IsStripRestartEnabled() and rd.IsStrip(self.drawcall.topology)
+            restart_idx = self.pipe.GetStripRestartIndex() & ((1 << (ib.byteStride*8)) - 1)
+            restart_enabled = self.pipe.IsStripRestartEnabled() and rd.IsStrip(self.pipe.GetPrimitiveTopology())
 
             # Detect restart indices and map them to None, otherwise apply basevertex
             indices = [None if restart_enabled and i == restart_idx else i + self.drawcall.baseVertex for i in indices]

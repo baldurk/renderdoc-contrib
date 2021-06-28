@@ -4,7 +4,7 @@ This extension is primarily aimed at newcomers to graphics debugging who might n
 
 If you find a case where a drawcall is missing and you feel like it's something this extension could usefully catch or alert you to then please file an issue with more information.
 
-It requires at least RenderDoc v1.12 to function.
+This extension is generally built against the latest version of RenderDoc, as the python API can change between versions and ease of readability is valued over backwards compatibility.
 
 ![Animation showing how the extension works](https://user-images.githubusercontent.com/661798/105998779-e6eb1080-60a4-11eb-8353-f213040e4d22.gif)
 
