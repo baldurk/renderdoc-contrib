@@ -142,6 +142,19 @@ class Window(qrd.CaptureViewer):
         self.cur_result = 0
         self.results = []
 
+        def shutdown_out(r: rd.ReplayController):
+            if self.texOut is not None:
+                self.texOut.Shutdown()
+            if self.meshOut is not None:
+                self.meshOut.Shutdown()
+            self.texOut = None
+            self.meshOut = None
+
+        self.ctx.Replay().AsyncInvoke('', shutdown_out)
+
+    def closed(self):
+        self.reset()
+
     def OnSelectedEventChanged(self, event):
         pass
 
@@ -368,6 +381,7 @@ cur_window: Optional[Window] = None
 def closed():
     global cur_window
     if cur_window is not None:
+        cur_window.closed()
         cur_window.ctx.RemoveCaptureViewer(cur_window)
     cur_window = None
 
