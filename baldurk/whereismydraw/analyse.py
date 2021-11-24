@@ -959,6 +959,7 @@ class Analysis:
             if vsbind.constantBlocks[i].arraySize <= 1:
                 cb = self.pipe.GetConstantBuffer(rd.ShaderStage.Vertex, i, 0)
                 cb_vars = self.r.GetCBufferVariableContents(self.pipe.GetGraphicsPipelineObject(), vs,
+                                                            rd.ShaderStage.Vertex,
                                                             self.pipe.GetShaderEntryPoint(rd.ShaderStage.Vertex), i,
                                                             cb.resourceId, cb.byteOffset, cb.byteSize)
 
