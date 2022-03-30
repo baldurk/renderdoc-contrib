@@ -1,245 +1,203 @@
 #version 420 core
 
-#if defined(VULKAN)
+/////////////////////////////////////
+//            Constants            //
+/////////////////////////////////////
 
-layout(binding = 0, std140) uniform RENDERDOC_Uniforms
-{
-	uvec4 TexDim;
-	uint SelectedMip;
-	int TextureType; // 1 = 1D, 2 = 2D, 3 = 3D, 4 = 2DMS
-	uint SelectedSliceFace;
-	int SelectedSample;
-	uvec4 YUVDownsampleRate;
-	uvec4 YUVAChannels;
-} RENDERDOC;
+// possible values (these are only return values from this function, NOT texture binding points):
+// RD_TextureType_1D
+// RD_TextureType_2D
+// RD_TextureType_3D
+// RD_TextureType_Cube (OpenGL only)
+// RD_TextureType_1D_Array (OpenGL only)
+// RD_TextureType_2D_Array (OpenGL only)
+// RD_TextureType_Cube_Array (OpenGL only)
+// RD_TextureType_Rect (OpenGL only)
+// RD_TextureType_Buffer (OpenGL only)
+// RD_TextureType_2DMS
+// RD_TextureType_2DMS_Array (OpenGL only)
+uint RD_TextureType();
 
-#define RENDERDOC_TexDim RENDERDOC.TexDim
-#define RENDERDOC_SelectedMip RENDERDOC.SelectedMip
-#define RENDERDOC_TextureType RENDERDOC.TextureType
-#define RENDERDOC_SelectedSliceFace RENDERDOC.SelectedSliceFace
-#define RENDERDOC_SelectedSample RENDERDOC.SelectedSample
-#define RENDERDOC_YUVDownsampleRate RENDERDOC.YUVDownsampleRate
-#define RENDERDOC_YUVAChannels RENDERDOC.YUVAChannels
+// selected sample, or -numSamples for resolve
+int RD_SelectedSample();
 
-// Textures
-// Floating point samplers
-layout(binding = 6) uniform sampler1DArray tex1DArray;
-layout(binding = 7) uniform sampler2DArray tex2DArray;
-layout(binding = 8) uniform sampler3D tex3D;
-layout(binding = 9) uniform sampler2DMSArray tex2DMSArray;
+uint RD_SelectedSliceFace();
 
-/*
-// Unsigned int samplers
-layout(binding = 11) uniform usampler1DArray texUInt1DArray;
-layout(binding = 12) uniform usampler2DArray texUInt2DArray;
-layout(binding = 13) uniform usampler3D texUInt3D;
-layout(binding = 14) uniform usampler2DMSArray texUInt2DMSArray;
+uint RD_SelectedMip();
 
-// Int samplers
-layout(binding = 16) uniform isampler1DArray texSInt1DArray;
-layout(binding = 17) uniform isampler2DArray texSInt2DArray;
-layout(binding = 18) uniform isampler3D texSInt3D;
-layout(binding = 19) uniform isampler2DMSArray texSInt2DMSArray;
-*/
+// xyz = width, height, depth (or array size). w = # mips
+uvec4 RD_TexDim();
 
-// End Textures
+// x = horizontal downsample rate (1 full rate, 2 half rate)
+// y = vertical downsample rate
+// z = number of planes in input texture
+// w = number of bits per component (8, 10, 16)
+uvec4 RD_YUVDownsampleRate();
 
-vec4 get_pixel_col(vec2 uv)
-{
-  vec4 col = vec4(0,0,0,0);
+// x = where Y channel comes from
+// y = where U channel comes from
+// z = where V channel comes from
+// w = where A channel comes from
+// each index will be [0,1,2,3] for xyzw in first plane,
+// [4,5,6,7] for xyzw in second plane texture, etc.
+// it will be 0xff = 255 if the channel does not exist.
+uvec4 RD_YUVAChannels();
 
-  uvec4 texRes = RENDERDOC_TexDim;
+// a pair with minimum and maximum selected range values
+vec2 RD_SelectedRange();
 
-  // RENDERDOC_TexDim is always the dimension of the texture. When loading from smaller mips, we need to multiply
-  // uv by the mip dimension
-  texRes.x = max(1u, texRes.x >> RENDERDOC_SelectedMip);
-  texRes.y = max(1u, texRes.y >> RENDERDOC_SelectedMip);
-
-  if(RENDERDOC_TextureType == 1)
-  {
-    col = texelFetch(tex1DArray, ivec2(uv.x * texRes.x, RENDERDOC_SelectedSliceFace), int(RENDERDOC_SelectedMip));
-  }
-  else if(RENDERDOC_TextureType == 2)
-  {
-    col = texelFetch(tex2DArray, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), int(RENDERDOC_SelectedMip));
-  }
-  else if(RENDERDOC_TextureType == 3)
-  {
-    col = texelFetch(tex3D, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), int(RENDERDOC_SelectedMip));
-  }
-  else if(RENDERDOC_TextureType == 4)
-  {
-    if(RENDERDOC_SelectedSample < 0)
-    {
-      int sampleCount = -RENDERDOC_SelectedSample;
-
-      // worst resolve you've seen in your life
-      for(int i = 0; i < sampleCount; i++)
-        col += texelFetch(tex2DMSArray, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), i);
-
-      col /= float(sampleCount);
-    }
-    else
-    {
-      col = texelFetch(tex2DMSArray, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), RENDERDOC_SelectedSample);
-    }
-  }
+/////////////////////////////////////
 
 
-  return col;
-}
+/////////////////////////////////////
+//           Resources             //
+/////////////////////////////////////
 
-#else
+// Float Textures
+layout (binding = RD_FLOAT_1D_ARRAY_BINDING) uniform sampler1DArray tex1DArray;
+layout (binding = RD_FLOAT_2D_ARRAY_BINDING) uniform sampler2DArray tex2DArray;
+layout (binding = RD_FLOAT_3D_BINDING) uniform sampler3D tex3D;
+layout (binding = RD_FLOAT_2DMS_ARRAY_BINDING) uniform sampler2DMSArray tex2DMSArray;
 
-// OpenGL
+// YUV textures only supported on vulkan
+#ifdef VULKAN
+layout(binding = RD_FLOAT_YUV_ARRAY_BINDING) uniform sampler2DArray texYUVArray[2];
+#endif
 
+// OpenGL has more texture types to match
+#ifndef VULKAN
+layout (binding = RD_FLOAT_1D_BINDING) uniform sampler1D tex1D;
+layout (binding = RD_FLOAT_2D_BINDING) uniform sampler2D tex2D;
+layout (binding = RD_FLOAT_CUBE_BINDING) uniform samplerCube texCube;
+layout (binding = RD_FLOAT_CUBE_ARRAY_BINDING) uniform samplerCubeArray texCubeArray;
+layout (binding = RD_FLOAT_RECT_BINDING) uniform sampler2DRect tex2DRect;
+layout (binding = RD_FLOAT_BUFFER_BINDING) uniform samplerBuffer texBuffer;
+layout (binding = RD_FLOAT_2DMS_BINDING) uniform sampler2DMS tex2DMS;
+#endif
 
-// Textures
-/*
-// Unsigned int samplers
-layout (binding = 1) uniform usampler1D texUInt1D;
-layout (binding = 2) uniform usampler2D texUInt2D;
-layout (binding = 3) uniform usampler3D texUInt3D;
-// cube = 4
-layout (binding = 5) uniform usampler1DArray texUInt1DArray;
-layout (binding = 6) uniform usampler2DArray texUInt2DArray;
-// cube array = 7
-layout (binding = 8) uniform usampler2DRect texUInt2DRect;
-layout (binding = 9) uniform usamplerBuffer texUIntBuffer;
-layout (binding = 10) uniform usampler2DMS texUInt2DMS;
-layout (binding = 11) uniform usampler2DMSArray texUInt2DMSArray;
+// Int Textures
+layout (binding = RD_INT_1D_ARRAY_BINDING) uniform isampler1DArray texSInt1DArray;
+layout (binding = RD_INT_2D_ARRAY_BINDING) uniform isampler2DArray texSInt2DArray;
+layout (binding = RD_INT_3D_BINDING) uniform isampler3D texSInt3D;
+layout (binding = RD_INT_2DMS_ARRAY_BINDING) uniform isampler2DMSArray texSInt2DMSArray;
 
-// Int samplers
-layout (binding = 1) uniform isampler1D texSInt1D;
-layout (binding = 2) uniform isampler2D texSInt2D;
-layout (binding = 3) uniform isampler3D texSInt3D;
-// cube = 4
-layout (binding = 5) uniform isampler1DArray texSInt1DArray;
-layout (binding = 6) uniform isampler2DArray texSInt2DArray;
-// cube array = 7
-layout (binding = 8) uniform isampler2DRect texSInt2DRect;
-layout (binding = 9) uniform isamplerBuffer texSIntBuffer;
-layout (binding = 10) uniform isampler2DMS texSInt2DMS;
-layout (binding = 11) uniform isampler2DMSArray texSInt2DMSArray;
-*/
+#ifndef VULKAN
+layout (binding = RD_INT_1D_BINDING) uniform isampler1D texSInt1D;
+layout (binding = RD_INT_2D_BINDING) uniform isampler2D texSInt2D;
+layout (binding = RD_INT_RECT_BINDING) uniform isampler2DRect texSInt2DRect;
+layout (binding = RD_INT_BUFFER_BINDING) uniform isamplerBuffer texSIntBuffer;
+layout (binding = RD_INT_2DMS_BINDING) uniform isampler2DMS texSInt2DMS;
+#endif
 
-// Floating point samplers
-layout (binding = 1) uniform sampler1D tex1D;
-layout (binding = 2) uniform sampler2D tex2D;
-layout (binding = 3) uniform sampler3D tex3D;
-layout (binding = 4) uniform samplerCube texCube;
-layout (binding = 5) uniform sampler1DArray tex1DArray;
-layout (binding = 6) uniform sampler2DArray tex2DArray;
-layout (binding = 7) uniform samplerCubeArray texCubeArray;
-layout (binding = 8) uniform sampler2DRect tex2DRect;
-layout (binding = 9) uniform samplerBuffer texBuffer;
-layout (binding = 10) uniform sampler2DMS tex2DMS;
-layout (binding = 11) uniform sampler2DMSArray tex2DMSArray;
-// End Textures
+// Unsigned int Textures
+layout (binding = RD_UINT_1D_ARRAY_BINDING) uniform usampler1DArray texUInt1DArray;
+layout (binding = RD_UINT_2D_ARRAY_BINDING) uniform usampler2DArray texUInt2DArray;
+layout (binding = RD_UINT_3D_BINDING) uniform usampler3D texUInt3D;
+layout (binding = RD_UINT_2DMS_ARRAY_BINDING) uniform usampler2DMSArray texUInt2DMSArray;
 
-// 1 = 1D, 2 = 2D, 3 = 3D, 4 = Cube
-// 5 = 1DArray, 6 = 2DArray, 7 = CubeArray
-// 8 = Rect, 9 = Buffer, 10 = 2DMS, 11 = 2DMSArray
-uniform uint RENDERDOC_TextureType;
+#ifndef VULKAN
+layout (binding = RD_UINT_1D_BINDING) uniform usampler1D texUInt1D;
+layout (binding = RD_UINT_2D_BINDING) uniform usampler2D texUInt2D;
+layout (binding = RD_UINT_RECT_BINDING) uniform usampler2DRect texUInt2DRect;
+layout (binding = RD_UINT_BUFFER_BINDING) uniform usamplerBuffer texUIntBuffer;
+layout (binding = RD_UINT_2DMS_BINDING) uniform usampler2DMS texUInt2DMS;
+#endif
 
-// selected MSAA sample or -numSamples for resolve. See docs
-uniform int RENDERDOC_SelectedSample;
-
-// selected array slice or cubemap face in UI
-uniform uint RENDERDOC_SelectedSliceFace;
-
-// selected mip in UI
-uniform uint RENDERDOC_SelectedMip;
-
-// xyz == width, height, depth. w == # mips
-uniform uvec4 RENDERDOC_TexDim;
+/////////////////////////////////////
 
 vec4 get_pixel_col(vec2 uv)
 {
   vec4 col = vec4(0,0,0,0);
 
-  uvec4 texRes = RENDERDOC_TexDim;
+  int sampleCount = -RD_SelectedSample();
 
-  // RENDERDOC_TexDim is always the dimension of the texture. When loading from smaller mips, we need to multiply
+  uvec4 texRes = RD_TexDim();
+
+  uint mip = RD_SelectedMip();
+  uint sliceFace = RD_SelectedSliceFace();
+
+  // RD_TexDim() is always the dimension of the texture. When loading from smaller mips, we need to multiply
   // uv by the mip dimension
-  texRes.x = max(1u, texRes.x >> RENDERDOC_SelectedMip);
-  texRes.y = max(1u, texRes.y >> RENDERDOC_SelectedMip);
+  texRes.x = max(1u, texRes.x >> mip);
+  texRes.y = max(1u, texRes.y >> mip);
 
-  if(RENDERDOC_TextureType == 1)
+// handle OpenGL-specific types, including non-arrayed versions
+#ifndef VULKAN
+  if(RD_TextureType() == RD_TextureType_1D)
   {
-    col = texelFetch(tex1D, int(uv.x * texRes.x), int(RENDERDOC_SelectedMip));
+    return texelFetch(tex1D, int(uv.x * texRes.x), int(mip));
   }
-  else if(RENDERDOC_TextureType == 2)
+  else if(RD_TextureType() == RD_TextureType_2D)
   {
-    col = texelFetch(tex2D, ivec2(uv * texRes.xy), int(RENDERDOC_SelectedMip));
+    return texelFetch(tex2D, ivec2(uv * texRes.xy), int(mip));
   }
-  else if(RENDERDOC_TextureType == 3)
-  {
-    col = texelFetch(tex3D, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), int(RENDERDOC_SelectedMip));
-  }
-  else if(RENDERDOC_TextureType == 4)
+  else if(RD_TextureType() == RD_TextureType_Cube)
   {
     // don't handle cubemaps here, GL needs you to generate a cubemap lookup vector
   }
-  else if(RENDERDOC_TextureType == 5)
-  {
-    col = texelFetch(tex1DArray, ivec2(uv.x * texRes.x, RENDERDOC_SelectedSliceFace), int(RENDERDOC_SelectedMip));
-  }
-  else if(RENDERDOC_TextureType == 6)
-  {
-    col = texelFetch(tex2DArray, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), int(RENDERDOC_SelectedMip));
-  }
-  else if(RENDERDOC_TextureType == 7)
+  else if(RD_TextureType() == RD_TextureType_Cube_Array)
   {
     // don't handle cubemaps here, GL needs you to generate a cubemap lookup vector
   }
-  else if(RENDERDOC_TextureType == 8)
+  else if(RD_TextureType() == RD_TextureType_Rect)
   {
-    col = texelFetch(tex2DRect, ivec2(uv * texRes.xy));
+    return texelFetch(tex2DRect, ivec2(uv * texRes.xy));
   }
-  else if(RENDERDOC_TextureType == 9)
+  else if(RD_TextureType() == RD_TextureType_Buffer)
   {
-    col = texelFetch(texBuffer, int(uv.x * texRes.x));
+    return texelFetch(texBuffer, int(uv.x * texRes.x));
   }
-  else if(RENDERDOC_TextureType == 10)
+  else if(RD_TextureType() == RD_TextureType_2DMS)
   {
-    if(RENDERDOC_SelectedSample < 0)
+    if(sampleCount < 0)
     {
-      int sampleCount = -RENDERDOC_SelectedSample;
-
       // worst resolve you've seen in your life
       for(int i = 0; i < sampleCount; i++)
         col += texelFetch(tex2DMS, ivec2(uv * texRes.xy), i);
 
       col /= float(sampleCount);
+
+      return col;
     }
     else
     {
-      col = texelFetch(tex2DMS, ivec2(uv * texRes.xy), RENDERDOC_SelectedSample);
+      return texelFetch(tex2DMS, ivec2(uv * texRes.xy), sampleCount);
     }
   }
-  else if(RENDERDOC_TextureType == 11)
-  {
-    if(RENDERDOC_SelectedSample < 0)
-    {
-      int sampleCount = -RENDERDOC_SelectedSample;
+#endif
 
+  // we check for both array and non-array types here, since vulkan just
+  // reports "1D" whereas GL will report "1D Array"
+  if(RD_TextureType() == RD_TextureType_1D || RD_TextureType() == RD_TextureType_1D_Array)
+  {
+    return texelFetch(tex1DArray, ivec2(uv.x * texRes.x, sliceFace), int(mip));
+  }
+  else if(RD_TextureType() == RD_TextureType_2D || RD_TextureType() == RD_TextureType_2D_Array)
+  {
+    return texelFetch(tex2DArray, ivec3(uv * texRes.xy, sliceFace), int(mip));
+  }
+  else if(RD_TextureType() == RD_TextureType_3D)
+  {
+    col = texelFetch(tex3D, ivec3(uv * texRes.xy, sliceFace), int(mip));
+  }
+  else if(RD_TextureType() == RD_TextureType_2DMS || RD_TextureType() == RD_TextureType_2DMS_Array)
+  {
+    if(sampleCount < 0)
+    {
       // worst resolve you've seen in your life
       for(int i = 0; i < sampleCount; i++)
-        col += texelFetch(tex2DMSArray, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), i);
+        col += texelFetch(tex2DMSArray, ivec3(uv * texRes.xy, sliceFace), i);
 
       col /= float(sampleCount);
     }
     else
     {
-      col = texelFetch(tex2DMSArray, ivec3(uv * texRes.xy, RENDERDOC_SelectedSliceFace), RENDERDOC_SelectedSample);
+      col = texelFetch(tex2DMSArray, ivec3(uv * texRes.xy, sliceFace), sampleCount);
     }
   }
 
   return col;
 }
-
-#endif
 
 layout (location = 0) in vec2 uv;
 layout (location = 0) out vec4 color_out;
