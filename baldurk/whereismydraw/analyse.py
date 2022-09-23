@@ -687,6 +687,39 @@ class Analysis:
                 msg='Rasterizer discard is not enabled, so that should be fine.',
                 pipe_stage=qrd.PipelineStage.Rasterizer))
 
+        # Check position was written to
+        vsrefl = self.pipe.GetShaderReflection(rd.ShaderStage.Vertex)
+        dsrefl = self.pipe.GetShaderReflection(rd.ShaderStage.Domain)
+        gsrefl = self.pipe.GetShaderReflection(rd.ShaderStage.Geometry)
+        lastrefl = None
+
+        if lastrefl is None:
+            lastrefl = gsrefl
+        if lastrefl is None:
+            lastrefl = dsrefl
+        if lastrefl is None:
+            lastrefl = vsrefl
+
+        if lastrefl is None:
+            self.analysis_steps.append(ResultStep(
+                msg='No vertex, tessellation or geometry shader is bound.',
+                mesh_view=self.postvs_stage))
+
+            raise AnalysisFinished
+
+        pos_found = False
+        for sig in lastrefl.outputSignature:
+            if sig.systemValue == rd.ShaderBuiltin.Position:
+                pos_found = True
+
+        if not pos_found:
+            self.analysis_steps.append(ResultStep(
+                msg='The last post-transform shader {} does not write to the position builtin.'
+                    .format(lastrefl.resourceId),
+                mesh_view=self.postvs_stage))
+
+            raise AnalysisFinished
+
         if len(self.vert_ndc) == 0 and len(self.postvs_positions) != 0:
             self.analysis_steps.append(ResultStep(
                 msg='All of the post-transform vertex positions have W=0.0 which is invalid, you should check your '
