@@ -833,8 +833,8 @@ class Analysis:
             # Unpack all the indices
             indices = struct.unpack_from(index_fmt, ibdata)
 
-            restart_idx = self.pipe.GetStripRestartIndex() & ((1 << (ib.byteStride*8)) - 1)
-            restart_enabled = self.pipe.IsStripRestartEnabled() and rd.IsStrip(self.pipe.GetPrimitiveTopology())
+            restart_idx = self.pipe.GetRestartIndex() & ((1 << (ib.byteStride*8)) - 1)
+            restart_enabled = self.pipe.IsRestartEnabled() and rd.IsStrip(self.pipe.GetPrimitiveTopology())
 
             # Detect restart indices and map them to None, otherwise apply basevertex
             indices = [None if restart_enabled and i == restart_idx else i + self.drawcall.baseVertex for i in indices]
