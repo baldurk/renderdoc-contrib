@@ -413,13 +413,13 @@ class Analysis:
         def is_zero(mul: rd.BlendMultiplier):
             if mul == rd.BlendMultiplier.Zero:
                 return True
-            if rd.BlendMultiplier.FactorAlpha and blend_factor[3] == 0.0:
+            if mul == rd.BlendMultiplier.FactorAlpha and blend_factor[3] == 0.0:
                 return True
-            if rd.BlendMultiplier.FactorRGB and blend_factor[0:3] == (0.0, 0.0, 0.0):
+            if mul == rd.BlendMultiplier.FactorRGB and blend_factor[0:3] == (0.0, 0.0, 0.0):
                 return True
-            if rd.BlendMultiplier.InvFactorAlpha and blend_factor[3] == 1.0:
+            if mul == rd.BlendMultiplier.InvFactorAlpha and blend_factor[3] == 1.0:
                 return True
-            if rd.BlendMultiplier.InvFactorRGB and blend_factor[0:3] == (1.0, 1.0, 1.0):
+            if mul == rd.BlendMultiplier.InvFactorRGB and blend_factor[0:3] == (1.0, 1.0, 1.0):
                 return True
             return False
 
