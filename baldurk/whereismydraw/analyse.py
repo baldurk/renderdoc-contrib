@@ -640,7 +640,7 @@ class Analysis:
     def check_offscreen(self):
         v = self.pipe.GetViewport(0)
 
-        if v.width <= 1.0 or v.height <= 1.0:
+        if v.width <= 1.0 or abs(v.height) <= 1.0:
             self.analysis_steps.append(
                 ResultStep(msg='Viewport 0 is {}x{} so nothing will be rendered.'.format(v.width, v.height),
                            pipe_stage=qrd.PipelineStage.ViewportsScissors))
