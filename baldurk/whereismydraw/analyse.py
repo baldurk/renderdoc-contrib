@@ -1132,18 +1132,27 @@ class Analysis:
 
     def check_failed_backface_culling(self):
         cull_mode = rd.CullMode.NoCull
+        front = 'Front CW'
         if self.api == rd.GraphicsAPI.OpenGL:
             cull_mode = self.glpipe.rasterizer.state.cullMode
+            if self.glpipe.rasterizer.state.frontCCW:
+                front = 'Front: CCW'
         elif self.api == rd.GraphicsAPI.Vulkan:
             cull_mode = self.vkpipe.rasterizer.cullMode
+            if self.vkpipe.rasterizer.frontCCW:
+                front = 'Front: CCW'
         elif self.api == rd.GraphicsAPI.D3D11:
             cull_mode = self.d3d11pipe.rasterizer.state.cullMode
+            if self.d3d11pipe.rasterizer.state.frontCCW:
+                front = 'Front: CCW'
         elif self.api == rd.GraphicsAPI.D3D12:
             cull_mode = self.d3d12pipe.rasterizer.state.cullMode
+            if self.d3d12pipe.rasterizer.state.frontCCW:
+                front = 'Front: CCW'
 
         self.analysis_steps.append(ResultStep(
             msg='The backface culling overlay shows red, so the draw is completely backface culled.\n\n'
-                'Check your polygon winding and front-facing state ({}).'.format(cull_mode),
+                'Check your polygon winding ({}) and front-facing state ({}).'.format(front, str(cull_mode)),
             tex_display=self.tex_display))
 
         raise AnalysisFinished
