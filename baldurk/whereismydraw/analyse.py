@@ -533,7 +533,9 @@ class Analysis:
             self.out.SetTextureDisplay(self.tex_display)
             overlay = self.out.GetDebugOverlayTexID()
 
-            drawcall_overlay_data = self.r.GetTextureData(overlay, self.tex_display.subresource)
+            sub = rd.Subresource(self.tex_display.subresource.mip, 0, 0)
+
+            drawcall_overlay_data = self.r.GetTextureData(overlay, sub)
 
             dim = self.out.GetDimensions()
 
@@ -1420,7 +1422,9 @@ class Analysis:
             self.out.SetTextureDisplay(self.tex_display)
             overlay = self.out.GetDebugOverlayTexID()
 
-            drawcall_overlay_data = self.r.GetTextureData(overlay, self.tex_display.subresource)
+            sub = rd.Subresource(self.tex_display.subresource.mip, 0, 0)
+
+            drawcall_overlay_data = self.r.GetTextureData(overlay, sub)
 
             dim = self.out.GetDimensions()
 
