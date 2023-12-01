@@ -123,7 +123,8 @@ class Analysis:
                     if vert * postvs.vertexByteStride + 16 < len(pos_data):
                         self.postvs_positions.append(struct.unpack_from("4f", pos_data, vert * postvs.vertexByteStride))
 
-        self.vert_ndc = [(vert[0] / vert[3], vert[1] / vert[3], vert[2] / vert[3]) for vert in self.postvs_positions if vert[3] != 0.0]
+        self.vert_ndc = [(vert[0] / vert[3], vert[1] / vert[3], vert[2] / vert[3]) for vert in self.postvs_positions if
+                         vert[3] != 0.0]
 
         # Create a temporary offscreen output we'll use for
         self.out = self.r.CreateOutput(rd.CreateHeadlessWindowingData(dim[0], dim[1]), rd.ReplayOutputType.Texture)
@@ -318,6 +319,12 @@ class Analysis:
                 pipe_stage=qrd.PipelineStage.SampleMask))
 
             raise AnalysisFinished
+        elif (sample_mask & 0xff) != 0xff:
+            self.analysis_steps.append(
+                ResultStep(msg='The sample mask {:08x} is non-zero, meaning at least some samples will '
+                               'render.\n\nSome bits are disabled so make sure you check the correct samples.'
+                               .format(sample_mask),
+                           tex_display=self.tex_display))
         else:
             self.analysis_steps.append(
                 ResultStep(msg='The sample mask {:08x} is non-zero or disabled, meaning at least some samples will '
