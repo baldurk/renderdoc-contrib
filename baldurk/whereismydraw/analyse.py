@@ -42,7 +42,7 @@ class PixelHistoryData:
 
 class ResultStep:
     def __init__(self, *, msg='', tex_display=rd.TextureDisplay(), pixel_history=PixelHistoryData(),
-                 pipe_stage=qrd.PipelineStage.ComputeShader, mesh_view=rd.MeshDataStage.Unknown):
+                 pipe_stage=qrd.PipelineStage.ComputeShader, mesh_view=rd.MeshDataStage.Count):
         self.msg = msg
         # force copy the input, so it can be modified without changing the one in this step
         self.tex_display = rd.TextureDisplay(tex_display)
@@ -54,7 +54,7 @@ class ResultStep:
         return self.tex_display.resourceId != rd.ResourceId() or \
                self.pixel_history.id != rd.ResourceId() or \
                self.pipe_stage != qrd.PipelineStage.ComputeShader or \
-               self.mesh_view != rd.MeshDataStage.Unknown
+               self.mesh_view != rd.MeshDataStage.Count
 
 
 class AnalysisFinished(Exception):

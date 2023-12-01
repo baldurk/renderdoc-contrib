@@ -356,7 +356,7 @@ class Window(qrd.CaptureViewer):
             self.ctx.RaiseDockWindow(panel.Widget())
             return
 
-        if step.mesh_view != rd.MeshDataStage.Unknown:
+        if step.mesh_view != rd.MeshDataStage.Count:
             self.ctx.ShowMeshPreview()
             panel = self.ctx.GetMeshPreview()
             panel.ScrollToRow(0, step.mesh_view)
