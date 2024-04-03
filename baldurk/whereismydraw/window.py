@@ -368,7 +368,7 @@ class Window(qrd.CaptureViewer):
 
         if step.pixel_history.id != rd.ResourceId():
             panel = self.ctx.ViewPixelHistory(step.pixel_history.id, step.pixel_history.x, step.pixel_history.y,
-                                              step.pixel_history.tex_display)
+                                              step.pixel_history.view, step.pixel_history.tex_display)
             panel.SetHistory(step.pixel_history.history)
 
             self.ctx.AddDockWindow(panel.Widget(), qrd.DockReference.AddTo, self.topWindow)
