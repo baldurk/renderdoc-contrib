@@ -94,15 +94,15 @@ class Analysis:
         self.vert_ndc = []
 
         # Enumerate all bound targets, with depth last
-        self.targets = [t for t in self.pipe.GetOutputTargets() if t.resourceId != rd.ResourceId.Null()]
+        self.targets = [t for t in self.pipe.GetOutputTargets() if t.resource != rd.ResourceId.Null()]
         self.depth = self.pipe.GetDepthTarget()
-        if self.depth.resourceId != rd.ResourceId.Null():
+        if self.depth.resource != rd.ResourceId.Null():
             self.targets.append(self.depth)
 
         dim = (1, 1)
         self.target_descs = []
         for t in self.targets:
-            desc = self.get_tex(t.resourceId)
+            desc = self.get_tex(t.resource)
             self.target_descs.append(desc)
             w = max(dim[0], desc.width)
             h = max(dim[1], desc.height)
@@ -170,10 +170,10 @@ class Analysis:
     def check_draw(self):
         # Render a highlight overlay on the first target. If no color targets are bound this will be the depth
         # target.
-        self.tex_display.resourceId = self.targets[0].resourceId
+        self.tex_display.resourceId = self.targets[0].resource
         self.tex_display.subresource.mip = self.targets[0].firstMip
         self.tex_display.subresource.slice = self.targets[0].firstSlice
-        self.tex_display.typeCast = self.targets[0].typeCast
+        self.tex_display.typeCast = self.targets[0].format.compType
         self.tex_display.scale = -1.0
         texmin, texmax = self.r.GetMinMax(self.tex_display.resourceId, self.tex_display.subresource,
                                           self.tex_display.typeCast)
@@ -363,7 +363,7 @@ class Analysis:
         enabled_color_masks = []
         color_blends = []
         for i, b in enumerate(blends):
-            if i >= len(targets) or targets[i].resourceId == rd.ResourceId.Null():
+            if i >= len(targets) or targets[i].resource == rd.ResourceId.Null():
                 color_blends.append(None)
             else:
                 enabled_color_masks.append(b.writeMask != 0)
@@ -473,18 +473,18 @@ class Analysis:
         # see any change that will tell us that the draw is working but perhaps outputting the color that's already
         # there.
         for t in targets:
-            if t.resourceId != rd.ResourceId():
-                for sample in range(self.get_tex(t.resourceId).msSamp):
-                    self.tex_display.resourceId = t.resourceId
+            if t.resource != rd.ResourceId():
+                for sample in range(self.get_tex(t.resource).msSamp):
+                    self.tex_display.resourceId = t.resource
                     self.tex_display.subresource = rd.Subresource(t.firstMip, t.firstSlice, sample)
                     self.tex_display.backgroundColor = rd.FloatVector(0.0, 0.0, 0.0, 0.0)
                     self.tex_display.rangeMin = 0.0
                     self.tex_display.rangeMax = 1.0
 
                     self.get_overlay_minmax(rd.DebugOverlay.ClearBeforeDraw)
-                    texmin, texmax = self.r.GetMinMax(t.resourceId, rd.Subresource(), t.typeCast)
+                    texmin, texmax = self.r.GetMinMax(t.resource, rd.Subresource(), t.format.compType)
 
-                    tex_desc = self.get_tex(t.resourceId)
+                    tex_desc = self.get_tex(t.resource)
 
                     c = min(3, tex_desc.format.compCount)
 
@@ -510,14 +510,14 @@ class Analysis:
                     self.tex_display.backgroundColor = rd.FloatVector(1.0, 1.0, 1.0, 1.0)
 
                     self.get_overlay_minmax(rd.DebugOverlay.ClearBeforeDraw)
-                    texmin, texmax = self.r.GetMinMax(t.resourceId, rd.Subresource(), t.typeCast)
+                    texmin, texmax = self.r.GetMinMax(t.resourceId, rd.Subresource(), t.format.compType)
 
                     if any([_ != 1.0 for _ in texmin.floatValue[0:c]]) or \
                        any([_ != 1.0 for _ in texmax.floatValue[0:c]]):
                         self.analysis_steps.append(ResultStep(
                             msg='The target {} did show a change in RGB when selecting the \'clear before draw\' '
                                 'overlay on a white background. Perhaps your shader is outputting the color that is '
-                                'already there?'.format(t.resourceId),
+                                'already there?'.format(t.resource),
                             tex_display=self.tex_display))
 
                         raise AnalysisFinished
@@ -526,7 +526,7 @@ class Analysis:
                         self.analysis_steps.append(ResultStep(
                             msg='The target {} did show a change in alpha when selecting the \'clear before draw\' '
                                 'overlay on a white background. Perhaps your shader is outputting the color that is '
-                                'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
+                                'already there, or your blending state isn\'t as expected?'.format(t.resource),
                             tex_display=self.tex_display))
 
                         raise AnalysisFinished
@@ -567,7 +567,7 @@ class Analysis:
             for attempt in range(attempts):
                 covered = covered_list[attempt]
 
-                history = self.r.PixelHistory(self.targets[0].resourceId, covered[0], covered[1],
+                history = self.r.PixelHistory(self.targets[0].resource, covered[0], covered[1],
                                               self.tex_display.subresource,
                                               self.tex_display.typeCast)
 
@@ -995,16 +995,15 @@ class Analysis:
         # are obviously broken because they're all 0.0. Don't look inside structs or arrays because they might be
         # optional/unused
 
-        vsbind = self.pipe.GetBindpointMapping(rd.ShaderStage.Vertex)
         vsrefl = self.pipe.GetShaderReflection(rd.ShaderStage.Vertex)
 
-        for i in range(len(vsbind.constantBlocks)):
-            if vsbind.constantBlocks[i].arraySize <= 1:
-                cb = self.pipe.GetConstantBuffer(rd.ShaderStage.Vertex, i, 0)
+        for cb in self.pipe.GetConstantBlocks(rd.ShaderStage.Vertex):
+            if vsrefl.constantBlocks[cb.access.index].bindArraySize <= 1:
                 cb_vars = self.r.GetCBufferVariableContents(self.pipe.GetGraphicsPipelineObject(), vs,
                                                             rd.ShaderStage.Vertex,
-                                                            self.pipe.GetShaderEntryPoint(rd.ShaderStage.Vertex), i,
-                                                            cb.resourceId, cb.byteOffset, cb.byteSize)
+                                                            self.pipe.GetShaderEntryPoint(rd.ShaderStage.Vertex),
+                                                            cb.access.index, cb.descriptor.resource,
+                                                            cb.descriptor.byteOffset, cb.descriptor.byteSize)
 
                 for v in cb_vars:
                     if v.rows > 1 and v.columns > 1:
@@ -1311,7 +1310,7 @@ class Analysis:
 
         # If no depth buffer is bound, all APIs spec that depth/stencil test should always pass! This seems
         # quite strange.
-        if self.depth.resourceId == rd.ResourceId.Null():
+        if self.depth.resource == rd.ResourceId.Null():
             self.analysis_steps.append(ResultStep(
                 msg='No depth buffer is bound! Normally this means the {} should always pass.\n\n'
                     'Sorry I couldn\'t figure out the exact problem. Please check your {} '
@@ -1321,7 +1320,7 @@ class Analysis:
             raise AnalysisFinished
 
         # Get the last clear of the current depth buffer
-        usage = self.r.GetUsage(self.depth.resourceId)
+        usage = self.r.GetUsage(self.depth.resource)
 
         # Filter for clears before this event
         usage = [u for u in usage if u.eventId < self.eid and u.usage == rd.ResourceUsage.Clear]
@@ -1349,14 +1348,14 @@ class Analysis:
                         self.analysis_steps.append(ResultStep(
                             msg='The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
                                 '{},{} to {},{} is empty so nothing will get cleared.'
-                            .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
+                            .format(str(self.depth.resource), clear_eid, s.x, s.y, s_right, s_bottom),
                             pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
                     if s.x >= self.target_descs[-1].width or s.y >= self.target_descs[-1].height:
                         self.analysis_steps.append(ResultStep(
                             msg='The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
                                 '{},{} to {},{} doesn\'t cover the depth-stencil target so it won\'t get cleared.'
-                            .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom),
+                            .format(str(self.depth.resource), clear_eid, s.x, s.y, s_right, s_bottom),
                             pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
                     # if the clear's scissor doesn't overlap the viewport at the time of the draw,
@@ -1366,15 +1365,15 @@ class Analysis:
                             msg='The last depth-stencil clear of {} at {} had scissor enabled, but the scissor rect '
                                 '{},{} to {},{} is smaller than the current viewport {},{} to {},{}. '
                                 'This may mean not every pixel was properly cleared.'
-                            .format(str(self.depth.resourceId), clear_eid, s.x, s.y, s_right, s_bottom, v.x, v.y,
+                            .format(str(self.depth.resource), clear_eid, s.x, s.y, s_right, s_bottom, v.x, v.y,
                                     v_right, v_bottom),
                             pipe_stage=qrd.PipelineStage.ViewportsScissors))
 
             # If this was a clear then we expect the depth value to be uniform, so pick the pixel to
             # get the depth clear value.
-            clear_color = self.r.PickPixel(self.depth.resourceId, 0, 0,
+            clear_color = self.r.PickPixel(self.depth.resource, 0, 0,
                                            rd.Subresource(self.depth.firstMip, self.depth.firstSlice, 0),
-                                           self.depth.typeCast)
+                                           self.depth.format.compType)
 
             self.r.SetFrameEvent(self.eid, True)
 
@@ -1384,7 +1383,7 @@ class Analysis:
                         clear_color.floatValue[0] == 0.0 and depth_func == rd.CompareFunction.Less):
                     self.analysis_steps.append(ResultStep(
                         msg='The last depth clear of {} at @{} cleared depth to {:.4}, but the depth comparison '
-                            'function is {} which is impossible to pass.'.format(str(self.depth.resourceId),
+                            'function is {} which is impossible to pass.'.format(str(self.depth.resource),
                                                                                  clear_eid,
                                                                                  clear_color.floatValue[0],
                                                                                  str(depth_func).split('.')[-1]),
@@ -1405,7 +1404,7 @@ class Analysis:
                     self.analysis_steps.append(ResultStep(
                         msg='The last depth clear of {} at @{} cleared depth to {:.4}, but the viewport '
                             'min/max bounds ({:.4} to {:.4}) mean this draw can\'t compare {}.'
-                            .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0], v.minDepth,
+                            .format(str(self.depth.resource), clear_eid, clear_color.floatValue[0], v.minDepth,
                                     v.maxDepth, str(depth_func).split('.')[-1]),
                         pipe_stage=qrd.PipelineStage.DepthTest))
 
@@ -1418,13 +1417,13 @@ class Analysis:
                     self.analysis_steps.append(ResultStep(
                         msg='The last depth clear of {} at EID {} cleared depth to {}, but the depth comparison '
                             'function is {} which is highly unlikely to pass. This is worth checking'
-                        .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0],
+                        .format(str(self.depth.resource), clear_eid, clear_color.floatValue[0],
                                 str(depth_func).split('.')[-1]),
                         pipe_stage=qrd.PipelineStage.DepthTest))
                 else:
                     self.analysis_steps.append(ResultStep(
                         msg='The last depth clear of {} at @{} cleared depth to {}, which is reasonable.'
-                            .format(str(self.depth.resourceId), clear_eid, clear_color.floatValue[0])))
+                            .format(str(self.depth.resource), clear_eid, clear_color.floatValue[0])))
 
         # If there's no depth/stencil clear found at all, that's a red flag
         else:
@@ -1458,8 +1457,8 @@ class Analysis:
 
             if covered:
                 sub = rd.Subresource(self.targets[-1].firstMip, self.targets[-1].firstSlice)
-                history = self.r.PixelHistory(self.targets[-1].resourceId, covered[0], covered[1], sub,
-                                              self.targets[-1].typeCast)
+                history = self.r.PixelHistory(self.targets[-1].resource, covered[0], covered[1], sub,
+                                              self.targets[-1].format.compType)
 
                 if len(history) == 0 or history[-1].eventId != self.eid or history[-1].Passed():
                     self.analysis_steps.append(ResultStep(
@@ -1491,11 +1490,11 @@ class Analysis:
                     history_package = PixelHistoryData()
                     history_package.x = covered[0]
                     history_package.y = covered[1]
-                    history_package.id = self.targets[-1].resourceId
+                    history_package.id = self.targets[-1].resource
                     history_package.tex_display = rd.TextureDisplay(self.tex_display)
-                    history_package.tex_display.resourceId = self.targets[-1].resourceId
+                    history_package.tex_display.resourceId = self.targets[-1].resource
                     history_package.tex_display.subresource = sub
-                    history_package.tex_display.typeCast = self.targets[-1].typeCast
+                    history_package.tex_display.typeCast = self.targets[-1].format.compType
                     history_package.last_eid = last_draw_eid
                     history_package.view = rd.ReplayController.NoPreference
                     history_package.history = history
