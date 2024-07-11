@@ -493,7 +493,7 @@ class Analysis:
                         self.analysis_steps.append(ResultStep(
                             msg='The target {} did show a change in RGB when selecting the \'clear before draw\' '
                                 'overlay on a black background. Perhaps your shader is outputting the color that is '
-                                'already there?'.format(t.resourceId),
+                                'already there?'.format(t.resource),
                             tex_display=self.tex_display))
 
                         raise AnalysisFinished
@@ -502,7 +502,7 @@ class Analysis:
                         self.analysis_steps.append(ResultStep(
                             msg='The target {} did show a change in alpha when selecting the \'clear before draw\' '
                                 'overlay on a black background. Perhaps your shader is outputting the color that is '
-                                'already there, or your blending state isn\'t as expected?'.format(t.resourceId),
+                                'already there, or your blending state isn\'t as expected?'.format(t.resource),
                             tex_display=self.tex_display))
 
                         raise AnalysisFinished
@@ -510,7 +510,7 @@ class Analysis:
                     self.tex_display.backgroundColor = rd.FloatVector(1.0, 1.0, 1.0, 1.0)
 
                     self.get_overlay_minmax(rd.DebugOverlay.ClearBeforeDraw)
-                    texmin, texmax = self.r.GetMinMax(t.resourceId, rd.Subresource(), t.format.compType)
+                    texmin, texmax = self.r.GetMinMax(t.resource, rd.Subresource(), t.format.compType)
 
                     if any([_ != 1.0 for _ in texmin.floatValue[0:c]]) or \
                        any([_ != 1.0 for _ in texmax.floatValue[0:c]]):
