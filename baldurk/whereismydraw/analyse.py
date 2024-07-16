@@ -1197,15 +1197,6 @@ class Analysis:
             depth_func = self.d3d12pipe.outputMerger.depthStencilState.depthFunction
             depth_clamp = not self.d3d12pipe.rasterizer.state.depthClip
 
-        if not depth_enabled:
-            self.analysis_steps.append(ResultStep(
-                msg='Depth test stage is disabled! Normally this means the depth test should always pass.\n\n'
-                    'Sorry I couldn\'t figure out the exact problem. Please check your {} '
-                    'setup and report an issue so we can narrow this down in future.',
-                pipe_stage=qrd.PipelineStage.DepthTest))
-
-            raise AnalysisFinished
-
         # Check for state setups that will always fail
         if depth_func == rd.CompareFunction.Never:
             self.analysis_steps.append(ResultStep(
@@ -1225,7 +1216,8 @@ class Analysis:
 
         state_name = 'Depth Clip' if rd.IsD3D(self.api) else 'Depth Clamp'
 
-        # if depth clipping is enabled (aka depth clamping is disabled)
+        # if depth clipping is enabled (aka depth clamping is disabled), this happens regardless of if
+        # depth testing is enabled
         if not depth_clamp:
             # If the largest vertex NDC z is lower than the NDC range, the whole draw is near-plane clipped
             if vert_bounds[1] < ndc_bounds[0]:
@@ -1255,6 +1247,16 @@ class Analysis:
         else:
             self.analysis_steps.append(ResultStep(
                 msg='The current {} state means the near/far planes are ignored for clipping'.format(state_name)))
+
+        # all other checks should only run if depth test is enabled
+        if not depth_enabled:
+            self.analysis_steps.append(ResultStep(
+                msg='Depth test stage is disabled! Normally this means the depth test should always pass.\n\n'
+                    'Sorry I couldn\'t figure out the exact problem. Please check your {} '
+                    'setup and report an issue so we can narrow this down in future.',
+                pipe_stage=qrd.PipelineStage.DepthTest))
+
+            raise AnalysisFinished
 
         # Check that the viewport depth range doesn't trivially fail depth bounds
         if depth_bounds and (v.minDepth > depth_bounds[1] or v.maxDepth < depth_bounds[0]):
