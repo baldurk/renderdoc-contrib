@@ -383,10 +383,22 @@ class Analysis:
             blend_factor = self.d3d11pipe.outputMerger.blendState.blendFactor
             if self.d3d11pipe.outputMerger.depthStencilState.depthEnable:
                 depth_writes = self.d3d11pipe.outputMerger.depthStencilState.depthWrites
+
+                if self.d3d11pipe.outputMerger.depthReadOnly:
+                    self.analysis_steps.append(ResultStep(
+                        msg='Depth writes are enabled but the DSV is marked as read-only so no writes will happen.',
+                        pipe_stage=qrd.PipelineStage.Blending))
+                    depth_writes = False
         elif self.api == rd.GraphicsAPI.D3D12:
             blend_factor = self.d3d12pipe.outputMerger.blendState.blendFactor
             if self.d3d12pipe.outputMerger.depthStencilState.depthEnable:
                 depth_writes = self.d3d12pipe.outputMerger.depthStencilState.depthWrites
+
+                if self.d3d12pipe.outputMerger.depthReadOnly:
+                    self.analysis_steps.append(ResultStep(
+                        msg='Depth writes are enabled but the DSV is marked as read-only so no writes will happen.',
+                        pipe_stage=qrd.PipelineStage.Blending))
+                    depth_writes = False
 
         # if all color masks are disabled, at least warn - or consider the case solved if depth writes are also disabled
         if not any(enabled_color_masks):
@@ -532,7 +544,8 @@ class Analysis:
                         raise AnalysisFinished
 
         self.analysis_steps.append(
-            ResultStep(msg='Using the \'clear before draw\' overlay didn\'t show any output on either black or white.'))
+            ResultStep(msg='Using the \'clear before draw\' overlay didn\'t show any output on either black or white, '
+                       'which suggests the shader is discarding or not writing anything.'))
 
         # No obvious failures, if we can run a pixel history let's see if the shader discarded or output something that
         # would
