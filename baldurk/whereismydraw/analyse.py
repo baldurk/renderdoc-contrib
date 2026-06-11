@@ -27,7 +27,7 @@ import renderdoc as rd
 import struct
 import math
 import random
-from typing import Callable, Tuple, List
+from typing import Callable, Tuple, List, cast
 
 
 class PixelHistoryData:
@@ -219,15 +219,15 @@ class Analysis:
     def get_overlay_minmax(self, overlay: rd.DebugOverlay):
         self.tex_display.overlay = overlay
         self.out.SetTextureDisplay(self.tex_display)
-        overlay = self.out.GetDebugOverlayTexID()
-        return self.r.GetMinMax(overlay, rd.Subresource(), rd.CompType.Typeless)
+        overlay_id = self.out.GetDebugOverlayTexID()
+        return self.r.GetMinMax(overlay_id, rd.Subresource(), rd.CompType.Typeless)
 
     def get_overlay_histogram(self, tex_display, overlay: rd.DebugOverlay, minmax: Tuple[float, float],
                               channels: Tuple[bool, bool, bool, bool]):
         tex_display.overlay = overlay
         self.out.SetTextureDisplay(tex_display)
-        overlay = self.out.GetDebugOverlayTexID()
-        return self.r.GetHistogram(overlay, rd.Subresource(), rd.CompType.Typeless, minmax[0], minmax[1], channels)
+        overlay_id = self.out.GetDebugOverlayTexID()
+        return self.r.GetHistogram(overlay_id, rd.Subresource(), rd.CompType.Typeless, minmax[0], minmax[1], channels)
 
     def check_onscreen(self):
         # It's on-screen we debug the rasterization/testing/blending states
@@ -887,7 +887,7 @@ class Analysis:
             index_fmt = '=' + str(min(avail_indices, self.drawcall.numIndices)) + index_fmt
 
             # Unpack all the indices
-            indices = struct.unpack_from(index_fmt, ibdata)
+            indices = cast(List[int], struct.unpack_from(index_fmt, ibdata))
 
             restart_idx = self.pipe.GetRestartIndex() & ((1 << (ib.byteStride*8)) - 1)
             restart_enabled = self.pipe.IsRestartEnabled() and rd.IsStrip(self.pipe.GetPrimitiveTopology())
@@ -898,7 +898,7 @@ class Analysis:
             indices = [i + self.drawcall.vertexOffset for i in range(self.drawcall.numIndices)]
 
         # what's the maximum index? for bounds checking
-        max_index = max(indices)
+        max_index = max([i for i in indices if i is not None])
         max_index_idx = indices.index(max_index)
         max_inst = max(self.drawcall.numInstances - 1, 0)
 
@@ -1061,7 +1061,7 @@ class Analysis:
                         if suspicious:
                             self.analysis_steps.append(ResultStep(
                                 msg='Vertex constant {} in {} is an all-zero matrix which looks suspicious.\n\n{}'
-                                    .format(v.name, vsrefl.constantBlocks[i].name, value),
+                                    .format(v.name, vsrefl.constantBlocks[cb.access.index].name, value),
                                 pipe_stage=qrd.PipelineStage.VertexShader))
 
         # In general we can't know what the user will be doing with their vertex inputs to generate output, so we can't
@@ -1601,7 +1601,7 @@ class Analysis:
         # we can alert the users about it. This potentially has false positives if e.g. someone doesn't set backface
         # culling but also doesn't configure the backface stencil state.
 
-        def check_faces(msg: str, check: Callable[[rd.StencilFace], None]):
+        def check_faces(msg: str, check: Callable[[rd.StencilFace], bool]):
             checks = check(front), check(back)
 
             if all(checks):

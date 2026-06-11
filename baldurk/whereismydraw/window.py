@@ -59,12 +59,12 @@ class Window(qrd.CaptureViewer):
         mqt.AddWidget(horiz, mqt.CreateSpacer(True))
         mqt.AddWidget(vert, horiz)
 
-        self.results = mqt.CreateGroupBox(False)
-        mqt.SetWidgetText(self.results, "Results")
-        mqt.AddWidget(vert, self.results)
+        results = mqt.CreateGroupBox(False)
+        mqt.SetWidgetText(results, "Results")
+        mqt.AddWidget(vert, results)
 
         vert = mqt.CreateVerticalContainer()
-        mqt.AddWidget(self.results, vert)
+        mqt.AddWidget(results, vert)
         self.summaryText = mqt.CreateLabel()
         self.stepText = mqt.CreateLabel()
         self.texOutWidget = mqt.CreateOutputRenderingWidget()
@@ -89,10 +89,8 @@ class Window(qrd.CaptureViewer):
         mqt.AddWidget(vert, self.meshOutWidget)
         mqt.AddWidget(vert, self.resultsSpacer)
 
-        self.texOut: rd.ReplayOutput
-        self.texOut = None
-        self.meshOut: rd.ReplayOutput
-        self.meshOut = None
+        self.texOut: Optional[rd.ReplayOutput] = None
+        self.meshOut: Optional[rd.ReplayOutput] = None
 
         self.eid = 0
 
@@ -112,8 +110,10 @@ class Window(qrd.CaptureViewer):
         mesh_data: rd.WindowingData = mqt.GetWidgetWindowingData(self.meshOutWidget)
 
         def set_widgets():
-            mqt.SetWidgetReplayOutput(self.texOutWidget, self.texOut)
-            mqt.SetWidgetReplayOutput(self.meshOutWidget, self.meshOut)
+            if self.texOut is not None:
+                mqt.SetWidgetReplayOutput(self.texOutWidget, self.texOut)
+            if self.meshOut is not None:
+                mqt.SetWidgetReplayOutput(self.meshOutWidget, self.meshOut)
 
         def make_out(r: rd.ReplayController):
             self.texOut = r.CreateOutput(tex_data, rd.ReplayOutputType.Texture)
@@ -155,17 +155,17 @@ class Window(qrd.CaptureViewer):
     def closed(self):
         self.reset()
 
-    def OnSelectedEventChanged(self, event):
+    def OnSelectedEventChanged(self, eventId):
         pass
 
-    def OnEventChanged(self, event):
-        draw = self.ctx.GetAction(event)
+    def OnEventChanged(self, eventId):
+        draw = self.ctx.GetAction(eventId)
 
         if draw is not None and (draw.flags & rd.ActionFlags.Drawcall):
             mqt.SetWidgetText(self.analyseButton, "Analyse draw {}: {}".format(draw.eventId, self.get_action_name(draw)))
             mqt.SetWidgetEnabled(self.analyseButton, True)
         else:
-            mqt.SetWidgetText(self.analyseButton, "Can't analyse {}, select a draw".format(event))
+            mqt.SetWidgetText(self.analyseButton, "Can't analyse {}, select a draw".format(eventId))
             mqt.SetWidgetEnabled(self.analyseButton, False)
 
         self.refresh_result()
