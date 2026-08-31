@@ -120,7 +120,7 @@ class Window(qrd.CaptureViewer):
             self.meshOut = r.CreateOutput(mesh_data, rd.ReplayOutputType.Texture)
             mqt.InvokeOntoUIThread(set_widgets)
 
-        self.ctx.Replay().AsyncInvoke('', make_out)
+        self.ctx.Replay().AsyncInvoke(make_out)
 
     def OnCaptureClosed(self):
         self.reset()
@@ -150,7 +150,7 @@ class Window(qrd.CaptureViewer):
             self.texOut = None
             self.meshOut = None
 
-        self.ctx.Replay().AsyncInvoke('', shutdown_out)
+        self.ctx.Replay().AsyncInvoke(shutdown_out)
 
     def closed(self):
         self.reset()
@@ -254,7 +254,7 @@ class Window(qrd.CaptureViewer):
         if step.tex_display.resourceId != rd.ResourceId.Null():
             display = True
 
-            self.ctx.Replay().AsyncInvoke('', lambda _: self.texOut.SetTextureDisplay(step.tex_display))
+            self.ctx.Replay().AsyncInvoke(lambda _: self.texOut.SetTextureDisplay(step.tex_display))
 
             mqt.SetWidgetVisible(self.texOutWidget, True)
             mqt.SetWidgetVisible(self.resultsSpacer, False)

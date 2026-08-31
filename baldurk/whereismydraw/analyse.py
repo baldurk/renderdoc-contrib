@@ -51,6 +51,7 @@ class ResultStep:
         self.pipe_stage = pipe_stage
         self.mesh_view = mesh_view
 
+
     def has_details(self) -> bool:
         return self.tex_display.resourceId != rd.ResourceId() or \
                self.pixel_history.id != rd.ResourceId() or \
@@ -1685,4 +1686,4 @@ def analyse_draw(ctx: qrd.CaptureContext, eid: int, finished_callback):
         # Invoke back onto the UI thread to display the results
         ctx.Extensions().GetMiniQtHelper().InvokeOntoUIThread(lambda: finished_callback(analysis.get_steps()))
 
-    ctx.Replay().AsyncInvoke('where_is_my_draw', _replay_callback)
+    ctx.Replay().AsyncInvoke(_replay_callback, 'where_is_my_draw')
